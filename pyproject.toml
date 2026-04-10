@@ -1,0 +1,27 @@
+[project]
+name = "oko"
+version = "0.1.0"
+description = "Heterogeneous GNN fraud scoring engine"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.1",
+    "torch-geometric>=2.5",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+tuning = ["optuna"]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+oko = "oko.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

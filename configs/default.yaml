@@ -1,0 +1,60 @@
+graph_schema:
+  node_types: ["claim", "entity", "address", "npi"]
+  edge_types:
+    - ["entity", "files", "claim"]
+    - ["entity", "located_at", "address"]
+    - ["entity", "has_npi", "npi"]
+    - ["claim", "serviced_at", "address"]
+    - ["entity", "associated_with", "entity"]
+    - ["npi", "appears_on", "claim"]
+  attribute_node_types: []
+
+data:
+  note_embedding_dim: 768
+  projection_dim: 64
+  synthetic_num_claims: 2000
+  synthetic_num_entities: 1500
+  synthetic_num_addresses: 500
+  synthetic_num_npis: 200
+  synthetic_fraud_ratio: 0.05
+  train_ratio: 0.6
+  val_ratio: 0.2
+  test_ratio: 0.2
+
+backbone:
+  architecture: rgcn
+  num_layers: 2
+  hidden_dim: 128
+  num_heads: 4
+  dropout: 0.2
+
+pretrain:
+  strategy: dgi
+  epochs: 100
+  lr: 0.001
+  weight_decay: 0.00001
+  mask_ratio: 0.5
+  patience: 20
+
+head:
+  hidden_dims: [64]
+  dropout: 0.3
+
+train:
+  loss: focal
+  focal_gamma: 2.0
+  focal_alpha: 0.25
+  bce_pos_weight: 10.0
+  downweight_ratio: 1.0
+  epochs: 50
+  lr: 0.001
+  weight_decay: 0.0001
+  patience: 10
+
+sweep:
+  n_trials: 50
+  metric: auc_roc
+  direction: maximize
+
+seed: 42
+device: cpu

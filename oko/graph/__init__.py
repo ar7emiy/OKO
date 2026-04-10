@@ -1,0 +1,1 @@
+"""Graph schema and construction."""

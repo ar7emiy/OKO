@@ -1,0 +1,48 @@
+# Sweep configuration — base values for non-swept parameters.
+# Swept parameters are defined in oko/tuning/sweep.py:define_search_space
+
+graph_schema:
+  node_types: ["claim", "entity", "address", "npi"]
+  edge_types:
+    - ["entity", "files", "claim"]
+    - ["entity", "located_at", "address"]
+    - ["entity", "has_npi", "npi"]
+    - ["claim", "serviced_at", "address"]
+    - ["entity", "associated_with", "entity"]
+    - ["npi", "appears_on", "claim"]
+
+data:
+  note_embedding_dim: 768
+  projection_dim: 64
+  synthetic_num_claims: 2000
+  synthetic_num_entities: 1500
+  synthetic_num_addresses: 500
+  synthetic_num_npis: 200
+  synthetic_fraud_ratio: 0.05
+
+backbone:
+  architecture: rgcn
+  num_layers: 2
+  hidden_dim: 128
+  num_heads: 4
+  dropout: 0.2
+
+pretrain:
+  strategy: dgi
+  epochs: 30       # shorter for sweep
+  lr: 0.001
+  patience: 10
+
+train:
+  loss: focal
+  epochs: 20       # shorter for sweep
+  lr: 0.001
+  patience: 5
+
+sweep:
+  n_trials: 20
+  metric: auc_roc
+  direction: maximize
+
+seed: 42
+device: cpu
