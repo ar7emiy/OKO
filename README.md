@@ -6,7 +6,7 @@ This repository contains **only the scoring engine** (Layer 1). The explanation 
 
 ## Why this exists
 
-The previous fraud scoring system used a capped formula (`max(flag) + avg(others)/10`) that compressed scores at the top of the distribution and made it impossible to rank-order high-risk claims. It also relied entirely on SME-authored rules, which don't scale and can't capture multi-hop relational patterns (e.g. a shared address linking a new claim to a known fraud ring).
+Most fraud flag formulas compress scores at the top of the distribution and make it impossible to rank-order high-risk claims while it being translatable to non-technical stakeholders on the meaning of the values they are sorting risk by. It also relies entirely on SME-authored rules, which don't scale and can't capture multi-hop relational patterns (e.g. a shared address linking a new claim to a known fraud ring).
 
 This engine replaces the scoring formula with a heterogeneous GNN that:
 
