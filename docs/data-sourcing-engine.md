@@ -106,7 +106,7 @@ Assembling consumer information for third parties for **insurance eligibility** 
 
 ### 3.4 Entity resolution (scraped sources → canonical graph nodes)
 
-Five-stage pipeline; output is the canonical `entity`/`address`/`npi` node sets plus provenance:
+**Internal-only machinery**: this pipeline fuses *scraped* sources into the reference graph. It is never run against client data (see §5.1). Five stages; output is the canonical `entity`/`address`/`npi` node sets plus provenance:
 
 1. **Deterministic pass** — union-find on exact NPI (checksum-validated), EIN (where sources expose it: FL Sunbiz FEI, claims data), UEI/CAGE, DEA. These edges are immutable. NPI is the canonical individual key (Type 1) and org key (Type 2 + EIN). LEIE rows without NPI and all of SAM/OFAC fall through to stage 3.
 2. **Normalization** — addresses: `libpostal` expand/parse ([repo](https://github.com/openvenues/libpostal), C lib active Dec 2025; install via the `pypostal-multiarch` wheel fork) → USPS Pub-28 casing (`usaddress-scourgify`) → CASS validation (Geocodio batch) → canonical key = delivery-point barcode or `(street, secondary, ZIP+4)` tuple. Org names: `cleanco` suffix-stripping + domain rules ("DBA", "MED CTR"→"MEDICAL CENTER") for a blocking key, never as the stored name. Person names: `probablepeople` + nickname dictionary.
@@ -186,9 +186,11 @@ Claims content, note embeddings (synthetic notes), and ground-truth labels in mo
 
 ## 5. User data loading: how a suite user brings their data and leverages ours
 
-### 5.1 The two-input model
+### 5.1 The two-input model — contract, not consultancy
 
 A user of the suite brings **claims + labels** (the private half); OKO ships the **reference graph** (the public half: entities, addresses, NPIs, sanctions, utilization features — the output of this sourcing engine). The join happens at build time, on the user's infrastructure — claims never flow to us.
+
+**Posture decision:** OKO is an ML provider, not a data-onboarding service. We publish a data contract and the client conforms to it; we never run normalization, entity extraction, or ML-based resolution on client data. This is cheap for the client in our core domain because healthcare claims already carry billing/rendering NPIs by regulation — the hard linkage problem is solved by the payment system before the data reaches us. The §3.4 resolution machinery is **internal only**: it builds the reference graph from scraped sources and is never pointed at client data. Client notes participate exclusively as pre-computed embeddings (`note_emb`, via `VectorDBConnector`), which self-supervised pretraining consumes directly — no NER or mention extraction in v1. Verticals without an NPI-equivalent key (auto, P&C) are deferred rather than compensated for with resolution services.
 
 ### 5.2 The data contract (file-based, lowest-friction path)
 
@@ -208,19 +210,19 @@ my_data/
     └── claim.parquet            # node_id + 768-d note embedding columns
 ```
 
-Three rules make the join work, and they are the user's only integration burden:
-1. **NPIs referenced as raw 10-digit NPIs** — joined exactly against reference `npi` nodes.
-2. **Addresses passed through the shipped normalizer** (`oko-ingest normalize-addresses`, the same libpostal→CASS pipeline from §3.4) so user addresses hash to the same canonical keys as reference `address` nodes.
-3. **Entities matched by EIN where available**, else resolved against reference entities by the shipped Splink model (`oko-ingest resolve`), which emits a match report (auto-matched / review-band / unmatched) the user can inspect before building.
+Three deterministic rules make the join work, and they are the user's only integration burden — no ML, no judgment calls:
+1. **NPIs referenced as raw 10-digit NPIs** — joined exactly against reference `npi` nodes. (Already present on healthcare claims by regulation; this carries most of the linkage.)
+2. **Addresses passed through the shipped normalizer CLI** (`oko-ingest normalize-addresses`, the same deterministic libpostal→Pub-28 pipeline used to key reference `address` nodes) so user addresses hash to the same canonical keys.
+3. **Entities joined exactly on EIN where available.** No fuzzy matching of client data — if there's no key, there's no link.
 
-Unmatched user references don't fail the build — they become new local nodes with no reference features (the builder already filters edges to known nodes and zero-fills missing features).
+Unmatched user references don't fail the build — they become new local nodes with no reference features (the builder already filters edges to known nodes and zero-fills missing features). This graceful degradation is the integration story, not a failure mode: an unlinked claim is still scored from its own features, note embedding, and whatever edges did resolve, and self-supervised pretraining does not depend on complete linkage.
 
 ### 5.3 Assembly flow
 
 ```
 user claims/labels (private)          OKO Reference Graph Snapshot (shipped, versioned)
         │                                           │
-        └────────► oko-ingest resolve ◄─────────────┘        (join keys: NPI, canonical address, EIN/Splink)
+        └────────► deterministic join ◄────────────┘        (exact keys only: NPI, canonical address, EIN)
                           │
                   CompositeConnectors                        (reference + user data behind the four ABCs)
                           │
@@ -248,7 +250,7 @@ Concretely, the suite provides:
 
 1. **M1 — Tier 1 bulk ingestion**: NPPES (monthly+weekly merge), LEIE, SAM extracts, PECOS (+reassignment edges), staging + pandera schemas. No scraping at all yet.
 2. **M2 — Resolution**: address pipeline (libpostal/Geocodio), Splink models, `address_type` classifier, canonical node publication → first Reference Graph Snapshot.
-3. **M3 — User loading path**: file-based data contract, snapshot/file/composite connectors, `resolve` CLI + match report.
+3. **M3 — User loading path**: file-based data contract, snapshot/file/composite connectors, deterministic `normalize-addresses` CLI. (No client-facing resolution service — see §5.1 posture decision.)
 4. **M4 — Overlay generator** (Mode B) + weak-label wiring (Mode C) with temporal-split discipline.
 5. **M5 — Tier 3 scrapers** (OIG/DOJ enforcement NER → weak labels) and Tier 2 procurement decisions (OpenCorporates license, Geocodio volume, Regrid) based on M2 coverage gaps.
 
