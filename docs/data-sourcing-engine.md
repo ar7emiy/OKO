@@ -1,6 +1,7 @@
 # OKO Data Sourcing Engine — Requirements, Research, and Design
 
 **Status:** Proposal (research complete, implementation not started)
+**Companion doc:** [`product-scope.md`](./product-scope.md) — overall product scope, north star, and roadmap (extends §6 of this doc with M4b–M8).
 **Scope:** Real-world entity data acquisition for the OKO fraud-scoring graph — data requirements criteria, source catalog, scraping/ingestion methods and stack, synthetic-overlay strategy, and the user data-loading path.
 
 This document is the design for the layer that sits *upstream* of the existing connector ABCs (`oko/connectors/base.py`). Nothing here changes the model or training pipeline: the sourcing engine's only contract is to produce data that the four connectors can serve to `HeteroGraphBuilder`.
