@@ -13,9 +13,18 @@ pip install -e .            # install (Python 3.11+; torch, torch-geometric requ
 pip install -e .[dev]       # pytest
 pip install -e .[tuning]    # optuna, needed only for `sweep`
 
+pip install -e .[ingest]    # httpx, tenacity, pyarrow, duckdb, pandera (oko_ingest only)
+
 python -m pytest tests/ -v                          # all tests
 python -m pytest tests/test_training.py -v          # one file
 python -m pytest tests/test_training.py::test_name  # one test
+python -m pytest tests/test_ingest.py -v            # ingestion tests (no torch needed)
+
+# Ingestion CLI (see oko_ingest/__main__.py)
+python -m oko_ingest pull --source leie --data-dir data/staging
+python -m oko_ingest pull --source nppes --data-dir data/staging \
+    --from-file monthly.csv --from-file weekly.csv --snapshot-date 2026-06-01
+python -m oko_ingest vintages --data-dir data/staging
 
 # CLI (see oko/__main__.py)
 python -m oko train --config configs/default.yaml --output checkpoints/
@@ -39,6 +48,7 @@ Data flow: **connectors → `HeteroGraphBuilder` → PyG `HeteroData` → `Scori
 - `oko/training/` — `ScoringPipeline` (`pipeline.py`) orchestrates the three phases and transfers pretrained backbone weights into the fresh `FraudScorer`. `PretrainRunner` / `FinetuneRunner` are the loops (fine-tuning has early stopping on val AUC and per-sample downweighting); `losses.py` has `FocalLoss` / `WeightedBCELoss`; `evaluate.py` computes AUC-ROC, AUC-PR, P/R/F1, ECE.
 - `oko/synthetic/generator.py` — `SyntheticGraphGenerator` builds dev/test graphs with planted fraud patterns (shared-address rings, NPI reuse, feature anomalies), going through the same connector → builder path as real data.
 - `oko/tuning/sweep.py` — Optuna sweep; the search space is `define_search_space()`.
+- `oko_ingest/` — separate package (never imported by `oko/`) that bulk-ingests public datasets (NPPES, LEIE, SAM exclusions, PECOS) into an append-only `SnapshotStore` of snapshot-dated Parquet partitions queryable via DuckDB (`staging.py`). Sources subclass `BulkSource` (`sources/base.py`) and are registered in `SOURCE_REGISTRY`; staged tables are validated by pandera schemas (`schemas.py`). Snapshots are immutable — vintage retention backs as-of graph reconstruction (see `docs/`). Parsers emit pandas `"string"` dtype with `pd.NA` (never object-with-None). Design docs live in `docs/`.
 
 ## Key conventions
 
