@@ -249,7 +249,7 @@ Concretely, the suite provides:
 
 ## 6. Build order (proposed)
 
-1. **M1 — Tier 1 bulk ingestion**: NPPES (monthly+weekly merge), LEIE, SAM extracts, PECOS (+reassignment edges), staging + pandera schemas. No scraping at all yet.
+1. **M1 — Tier 1 bulk ingestion**: NPPES (monthly+weekly merge), LEIE, SAM extracts, PECOS (+reassignment edges), staging + pandera schemas. No scraping at all yet. **Includes snapshot-vintage retention from day one** (immutable dated snapshots of every source, plus backfill of historical vintages where archives allow, e.g. NBER NPPES mirrors) — required for as-of graph reconstruction, which the Track-A temporal backtest in [`validation-and-pilot-plan.md`](./validation-and-pilot-plan.md) depends on.
 2. **M2 — Resolution**: address pipeline (libpostal/Geocodio), Splink models, `address_type` classifier, canonical node publication → first Reference Graph Snapshot.
 3. **M3 — User loading path**: file-based data contract, snapshot/file/composite connectors, deterministic `normalize-addresses` CLI. (No client-facing resolution service — see §5.1 posture decision.)
 4. **M4 — Overlay generator** (Mode B) + weak-label wiring (Mode C) with temporal-split discipline.

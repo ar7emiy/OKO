@@ -1,7 +1,7 @@
 # OKO Product Scope & Roadmap
 
 **Status:** Aligned (June 2026)
-**Companion docs:** [`data-sourcing-engine.md`](./data-sourcing-engine.md) (Layer 0 design), repo README (Layer 1 scoring engine).
+**Companion docs:** [`data-sourcing-engine.md`](./data-sourcing-engine.md) (Layer 0 design), [`validation-and-pilot-plan.md`](./validation-and-pilot-plan.md) (proof program & blind pilot), [`client-onboarding-playbook.md`](./client-onboarding-playbook.md) (onboarding framework + worked TPA case), repo README (Layer 1 scoring engine).
 
 ## North star
 
