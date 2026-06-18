@@ -16,6 +16,26 @@ from oko_ingest.staging import SnapshotStore
 logger = logging.getLogger(__name__)
 
 
+def read_csv(path_or_buffer, **kwargs):
+    """Read a government CSV robustly.
+
+    CMS/OIG files are commonly Windows-1252/Latin-1, not UTF-8 (stray bytes
+    like 0xA0 break a UTF-8 read). Try UTF-8, then cp1252, then Latin-1 —
+    the last is byte-lossless and never raises. Defaults to all-string dtype.
+    """
+    kwargs.setdefault("dtype", str)
+    kwargs.setdefault("low_memory", False)
+    if "encoding" in kwargs:  # caller forced one (e.g. chunked reads)
+        return pd.read_csv(path_or_buffer, **kwargs)
+    for enc in ("utf-8", "cp1252"):
+        try:
+            return pd.read_csv(path_or_buffer, encoding=enc, **kwargs)
+        except UnicodeDecodeError:
+            if hasattr(path_or_buffer, "seek"):
+                path_or_buffer.seek(0)
+    return pd.read_csv(path_or_buffer, encoding="latin-1", **kwargs)
+
+
 class BulkSource(ABC):
     """A Tier-1 bulk dataset: download raw files, parse to staged tables.
 

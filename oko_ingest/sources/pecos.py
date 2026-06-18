@@ -5,29 +5,51 @@ whom, by enrollment ID) is the highest-value output: joined to enrollment
 it yields provider→provider billing edges for the reference graph.
 
 data.cms.gov serves dataset distributions through stable dataset pages; the
-distribution UUIDs rotate per release, so `download()` resolves them via
-the public metastore API by dataset title — verify titles on first live run.
+distribution UUIDs rotate per release, so `download()` resolves the current
+CSV via the public DCAT catalog (data.json) by dataset title. Titles are
+matched on whitespace-normalized, case-insensitive text (the live enrollment
+title contains a double space).
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pandas as pd
 
 from oko_ingest.fetch import PoliteFetcher
 from oko_ingest.npi import is_valid_npi
-from oko_ingest.sources.base import BulkSource, clean_str, pick_column
+from oko_ingest.sources.base import BulkSource, clean_str, pick_column, read_csv
 
-METASTORE_URL = "https://data.cms.gov/api/1/metastore/schemas/dataset/items"
+# Standard DCAT catalog for the main data.cms.gov platform.
+DCAT_CATALOG_URL = "https://data.cms.gov/data.json"
 DATASET_TITLES = {
-    "enrollment": "Medicare Fee-For-Service  Public Provider Enrollment",
+    "enrollment": "Medicare Fee-For-Service Public Provider Enrollment",
     "reassignment": "Revalidation Reassignment List",
 }
 
 
+def _norm_title(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+def _csv_download_url(item: dict) -> str | None:
+    """First CSV distribution downloadURL for a DCAT dataset item."""
+    for dist in item.get("distribution", []):
+        url = dist.get("downloadURL") or dist.get("data", {}).get("downloadURL", "")
+        media = (dist.get("mediaType") or "").lower()
+        if media == "text/csv" or str(url).lower().endswith(".csv"):
+            return url
+    return None
+
+
 def _looks_like_reassignment(df: pd.DataFrame) -> bool:
     cols = {c.strip().lower() for c in df.columns}
+    # Real PECOS revalidation-reassignment files pair Individual↔Group
+    # enrollment IDs; the older REASGN/RCV naming is kept as a fallback.
+    if {"individual enrollment id", "group enrollment id"} <= cols:
+        return True
     return any("reasgn" in c or "rcv" in c for c in cols)
 
 
@@ -36,32 +58,36 @@ class PECOSSource(BulkSource):
     tables = ("pecos_enrollment", "pecos_reassignment")
 
     def download(self, fetcher: PoliteFetcher, dest_dir: Path) -> list[Path]:
-        items = fetcher.get(METASTORE_URL).json()
-        by_title = {item.get("title", "").strip(): item for item in items}
+        catalog = fetcher.get(DCAT_CATALOG_URL).json()
+        datasets = catalog.get("dataset", catalog if isinstance(catalog, list) else [])
+        by_title = {_norm_title(d.get("title", "")): d for d in datasets}
         paths = []
         for key, title in DATASET_TITLES.items():
-            item = by_title.get(title)
+            item = by_title.get(_norm_title(title))
             if item is None:
                 raise RuntimeError(
-                    f"Dataset titled '{title}' not found in data.cms.gov metastore; "
+                    f"Dataset '{title}' not found in {DCAT_CATALOG_URL}; "
                     "title may have changed — verify manually."
                 )
-            dist = item["distribution"][0]
-            url = dist.get("downloadURL") or dist.get("data", {}).get("downloadURL")
+            url = _csv_download_url(item)
+            if not url:
+                raise RuntimeError(f"No CSV distribution for dataset '{title}'.")
             paths.append(fetcher.download(url, dest_dir / f"pecos_{key}.csv"))
         return paths
 
     def parse(self, files: list[Path]) -> dict[str, pd.DataFrame]:
         enrollment_frames, reassignment_frames = [], []
         for path in files:
-            raw = pd.read_csv(path, dtype=str, low_memory=False)
+            raw = read_csv(path)
             if _looks_like_reassignment(raw):
+                # Edge direction: an Individual provider reassigns benefits to
+                # a Group org (the org bills on their behalf) → provider→org.
                 out = pd.DataFrame(index=raw.index)
                 out["reassigning_enrollment_id"] = clean_str(
-                    pick_column(raw, "REASGN_BNFT_ENRLMT_ID")
+                    pick_column(raw, "Individual Enrollment ID", "REASGN_BNFT_ENRLMT_ID")
                 )
                 out["receiving_enrollment_id"] = clean_str(
-                    pick_column(raw, "RCV_BNFT_ENRLMT_ID")
+                    pick_column(raw, "Group Enrollment ID", "RCV_BNFT_ENRLMT_ID")
                 )
                 reassignment_frames.append(out.dropna())
             else:

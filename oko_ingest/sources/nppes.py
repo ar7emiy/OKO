@@ -20,11 +20,28 @@ from pathlib import Path
 
 import pandas as pd
 
+import zipfile
+
 from oko_ingest.fetch import PoliteFetcher
 from oko_ingest.npi import is_valid_npi
-from oko_ingest.sources.base import BulkSource, clean_str, pick_column, to_date
+from oko_ingest.sources.base import BulkSource, clean_str, pick_column, read_csv, to_date
 
 logger = logging.getLogger(__name__)
+
+# Only these source columns are read from the 330-column / ~8M-row file.
+_WANTED = {c for cands in (
+    ("NPI",), ("Entity Type Code",),
+    ("Provider Organization Name (Legal Business Name)",),
+    ("Provider Last Name (Legal Name)",), ("Provider First Name",),
+    ("Healthcare Provider Taxonomy Code_1",),
+    ("Provider First Line Business Practice Location Address",),
+    ("Provider Business Practice Location Address City Name",),
+    ("Provider Business Practice Location Address State Name",),
+    ("Provider Business Practice Location Address Postal Code",),
+    ("Provider Enumeration Date",), ("Last Update Date",),
+    ("NPI Deactivation Date",), ("NPPES Deactivation Date",),
+) for c in cands}
+_CHUNK = 500_000
 
 INDEX_URL = "https://download.cms.gov/nppes/NPI_Files.html"
 _ZIP_LINK_RE = re.compile(r"NPPES_Data_Dissemination[^\"']*V2\.zip", re.IGNORECASE)
@@ -71,6 +88,34 @@ def _parse_main(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _iter_npidata(files):
+    """Yield (buffer, is_deactivation) for each input.
+
+    NPPES ships as a ZIP holding the main ``npidata_pfile_*.csv`` (plus
+    practice-location/othername/endpoint files we ignore). For ZIPs we yield
+    the open member stream; plain CSVs (the ``--from-file`` / test path) are
+    yielded by path, with deactivation files detected from their header.
+    """
+    for path in files:
+        p = Path(path)
+        if p.suffix.lower() == ".zip":
+            with zipfile.ZipFile(p) as zf:
+                main = next(
+                    (n for n in zf.namelist()
+                     if n.startswith("npidata_pfile_") and "fileheader" not in n),
+                    None,
+                )
+                if main:
+                    with zf.open(main) as f:
+                        yield f, False
+                for n in zf.namelist():
+                    if "deactiv" in n.lower() and n.lower().endswith(".csv"):
+                        with zf.open(n) as f:
+                            yield f, True
+        else:
+            yield p, _is_deactivation_file(read_csv(p, nrows=0))
+
+
 class NPPESSource(BulkSource):
     name = "nppes"
     tables = ("nppes",)
@@ -92,12 +137,20 @@ class NPPESSource(BulkSource):
     def parse(self, files: list[Path]) -> dict[str, pd.DataFrame]:
         mains: list[pd.DataFrame] = []
         deactivations: list[pd.DataFrame] = []
-        for path in files:
-            raw = pd.read_csv(path, dtype=str, low_memory=False)
-            if _is_deactivation_file(raw):
-                deactivations.append(raw)
+        for buf, is_deact in _iter_npidata(files):
+            if is_deact:
+                deactivations.append(read_csv(buf))
             else:
-                mains.append(_parse_main(raw))
+                # Chunk the multi-GB main file; parse trims each chunk to the
+                # ~13 used columns and drops invalid NPIs before concat.
+                parts = [
+                    _parse_main(chunk)
+                    for chunk in read_csv(
+                        buf, encoding="latin-1",
+                        usecols=lambda c: c in _WANTED, chunksize=_CHUNK,
+                    )
+                ]
+                mains.append(pd.concat(parts, ignore_index=True))
         if not mains:
             raise ValueError("NPPES parse requires at least one main (monthly/weekly) CSV.")
 
