@@ -15,13 +15,23 @@ dependencies = [
 [project.optional-dependencies]
 tuning = ["optuna"]
 dev = ["pytest", "pytest-cov"]
+ingest = [
+    "httpx",
+    "tenacity",
+    "pyarrow",
+    "duckdb",
+    "pandera",
+]
 
 [project.scripts]
 oko = "oko.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["oko*", "oko_ingest*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
