@@ -98,6 +98,43 @@ Well-trodden pattern: technology-assisted review (e-discovery TAR) crossed with 
 
 Plus one data-quality operational note: with multiple reviewers, track inter-reviewer agreement and lightly adjudicate the gold set — disagreement is label noise that silently caps model quality.
 
+## Requirement 5 — The input-data standard (garbage-in is the real ceiling)
+
+**Verdict: correct and load-bearing — arguably the most important product realization so far. A pure scoring model's accuracy ceiling is the client's data quality, which varies wildly across TPAs/carriers. So the *input standard is part of the product*, not an onboarding detail. But the standard must be adoptable, privacy-preserving, and tiered, or it either produces a bad product (too loose) or has no addressable market (too strict).**
+
+### Don't invent a standard — profile an existing one
+
+The industry already has claims standards, and CMS is actively mandating them:
+- **X12 837** (claims) / **835** (remittance): the universal EDI format every payer/TPA already emits.
+- **HL7 FHIR**, specifically the **CARIN Blue Button** IG (claims/EOB, v2.1.0) and **Da Vinci PAS** — the modern API direction, now pushed by the CMS interoperability rule **CMS-0057-F** ([CARIN BB](https://build.fhir.org/ig/HL7/carin-bb/), [FHIR vs 837](https://www.flexpa.com/blog/fhir-vs-x12-837-simplifying-claims-data)).
+
+OKO's contract should be a **constrained profile of FHIR CARIN BB (and/or an 837 subset) plus OKO extensions** (canonical address keys, resolved party IDs, and the structured **parties/attorney table**). This rides a tailwind: payers are *already* being forced to build FHIR claims capability, so our standard piggybacks on mandated spend, and clearinghouse converters (837↔FHIR) already exist. This revises the earlier "refuse raw 837": we don't parse arbitrary EDI, but we anchor our contract to its vocabulary so client data teams and clearinghouses already know how to produce it.
+
+### Tiered standard with graceful degradation (resolves the high-bar/few-clients tension)
+
+A single strict standard would exclude messy-data clients (most of them); a loose one yields a bad product. Resolve with tiers, where the onboarding coverage gates *determine the tier* rather than pass/fail:
+
+| Tier | Client provides | Product delivered |
+|---|---|---|
+| **1 — Core** | Claims + provider NPIs (canonical addresses) | Provider-centric scoring |
+| **2 — Parties** | + structured party records incl. attorneys/firms/marketers | Full ring detection (the differentiated value) |
+| **3 — Narrative** | + adjuster notes (or pre-computed embeddings) | Richest evidence + note signal |
+
+This lets us sell to a messy-data client at Tier 1 and grow them, while never silently running ring-detection on data that can't support it. **It also resolves the notes/keyless-party fork:** structured parties move *into the standard* (extraction burden shifts to the client/clearinghouse who must produce a conformant parties table), so client-note-NER becomes an **optional best-effort enrichment** for Tier 3, not a core commitment. We get the keyless parties by raising the input bar, not by doing everyone's extraction.
+
+### Privacy: "they send it, we don't see it, we send results back"
+
+Three options, in adoption order — note the founder's instinct maps to TEE, not homomorphic encryption:
+- **v1 — On-prem / VPC deployment (already our design).** OKO runs inside the client environment; data never egresses; we never see it. Solves the privacy requirement outright for any infra-capable client — which is every large carrier/TPA, and what their security teams already demand.
+- **v2 — Confidential computing / GPU TEE (hosted-but-blind).** For clients who can't self-host: client encrypts → computation runs inside a hardware enclave we cannot inspect → encrypted result returned, with remote attestation letting the client cryptographically verify our blindness. Production-ready in 2026: NVIDIA H100/H200 confidential computing runs at 95–99% of native performance (<5% typical overhead), on Azure/AWS, ~10–15% price premium ([NVIDIA](https://developer.nvidia.com/blog/confidential-computing-on-h100-gpus-for-secure-and-trustworthy-ai/), [benchmark](https://arxiv.org/html/2409.03992v2)). This is the credible realization of the encrypt→compute-blind→decrypt idea.
+- **Parked — FHE / MPC.** Literal computation on encrypted data remains impractical for heterogeneous GNNs over large graphs (bootstrapping dominates ~84% of latency; demos are small CNNs). Research watch only; do not promise.
+
+### Onboarding leverage: ensure the carrier-side work without becoming a consultancy
+
+- **Conformance certification ("OKO-Ready").** The `validate` CLI + coverage report (onboarding playbook Phases 2–3) *are* the conformance test suite. Publish the profile + tests; clients self-certify by passing the tier gates. This creates lock-in and pushes prep work to them, by spec rather than by our labor.
+- **Clearinghouses as certified integration partners.** Availity, Optum/Change, Waystar et al. already transform claims between formats for a living — they are the natural partners to emit OKO-standard output from a carrier's raw systems, so the carrier doesn't do the work *and* we don't run per-client data projects. We define the spec; partners meet it.
+- **A formal standards consortium is a later option, not a now-build** — pursue only on demonstrated market pull; it is a different business and a distraction at this stage.
+
 ## Risk register (business)
 
 | Risk | Read | Mitigation |
@@ -122,10 +159,16 @@ Parked, explicitly: court-records expansion (co-defendant edges from RICO/takedo
 
 ## Research watch
 
-- **Alper — "Adaptive Graph Refinement and Label Propagation with LLMs for Cost-Effective Entity Resolution"** ([arXiv:2605.25814](https://arxiv.org/abs/2605.25814), 2026). Relevant to M2 (entity resolution). Critiques the static blocking→matching→clustering cascade (exactly our planned Splink pipeline) for producing a sparse graph with missing/noisy edges, and proposes unified iterative probabilistic label propagation over an evolving graph with budget-aware LLM adjudication. **Disposition:** harvest the *insight* now (treat resolution as iterative refinement over an evolving graph, not a one-shot cascade; budget-aware LLM only on the ambiguous band — which our §3.4 stage 4 already anticipates), but do **not** adopt the framework as core infra — it is a 2026 paper with no production track record, and LLM-in-the-loop matching adds nondeterminism and external dependency to a layer we need auditable and reproducible (`config.seed`). Keep deterministic-first + Splink as the reproducible backbone; benchmark Alper-style propagation against it only *after* the M2 baseline exists. **Scope note (corrected):** the paper's "dirty" single-dataset ER domain is *well-matched* to our problem, not a residual — the keyless-party universe (attorneys, firms, marketers, body shops; plus LEIE-without-NPI, SAM, OFAC, cross-state registries) is central to ring detection, not a minority. The cautions above are about production-readiness, not relevance. (Method read is from the abstract; arXiv blocks automated full-text fetch from our environment — re-read the PDF before any M2 design lock.)
+- **Alper — "Adaptive Graph Refinement and Label Propagation with LLMs for Cost-Effective Entity Resolution"** ([arXiv:2605.25814](https://arxiv.org/abs/2605.25814), 2026; full PDF read). Relevant to M2. It rejects the static blocking→matching→clustering cascade (our planned Splink pipeline) in favor of iterative probabilistic label propagation over an evolving KNN graph, spending a fixed LLM-query budget only on ambiguous pairs via a value-density greedy selector. **Adopt phased and modular** — it decomposes into independently deployable components, each built on production tech and each a standalone experiment; stop wherever marginal gain over the Splink baseline stops paying:
+  - **Phase 0 — Semantic blocking (no LLM).** PLM/SBERT embeddings + approximate KNN graph (FAISS/hnswlib), edge weight = α·cosine. Replaces brittle rule-blocks, raises candidate recall; this is the embedding-ANN blocking already noted in sourcing §3.4. Deterministic. Win condition: blocking recall vs Splink rule-blocks at equal candidate volume.
+  - **Phase 1 — Weighted label propagation (no LLM).** Soft-transitivity over the KNN graph auto-resolves high-confidence matches for free and reserves hard cases. Classic, deterministic, no external calls. Win condition: auto-resolve precision at zero query cost.
+  - **Phase 2 — Budgeted LLM adjudication (full method).** Value-density selection spends a hard $ budget of LLM pairwise queries only on the ambiguous band, feeding verdicts back into the graph (label flip, neighborhood expansion). This is sourcing §3.4 stage-4 made principled and integrated. Reported result: beats SOTA cascaded pipelines (ZeroER, CollaborEM, BatchER, ComEM, LLM-CER) on pairwise-F1 and NMI across 8 benchmarks at $0.5–$3/dataset budgets; ablation shows removing either propagation or the LLM costs >6% F1 — the synergy is the contribution.
+  - **Phase-2 adoption gates (non-negotiable):** (a) determinism/audit — cache every LLM pair-verdict as an immutable, versioned decision so reruns reproduce and every match is provenance-logged (model + prompt + verdict); (b) privacy — run only over public reference data or *inside the client enclave*, never shipping client PII to an external LLM. Phases 0–1 carry neither gate and can land first.
+  - **Scope:** deterministic NPI/EIN keys stay the spine; Alper's machinery targets the keyless-party residual (attorneys/firms/marketers) where it is actually needed.
 
 ## Open decisions
 
-- **Client-side keyless-party resolution (the central open fork).** Do we extend automated entity resolution to the client's *keyless* parties — attorneys, firms, marketers — including those that appear only in free-text notes (requiring note-NER), resolving them against the enriched reference graph? **For:** this is where much of the ring signal lives (law firm as ring hub), it matches what incumbent SIU tooling does, and resolution-as-core-capability is differentiated value, not consultancy. **Against:** more engineering, note-NER yield is limited by terse adjuster notes, and false merges *manufacture fake rings* — the precise failure the GNN is trained to flag, so linkage false-positives convert to scoring false-positives. The line that preserves the "contract, not consultancy" posture: we still do **not** do undifferentiated cleanup of clients' structured claim fields, but probabilistic *party* resolution against our reference graph would become a built-in pipeline step, not a per-client engagement. Reverses the earlier "deterministic client joins only / no NER on notes in v1" stance, so it needs explicit sign-off before encoding. **Status: awaiting decision.**
+- **Client-side keyless-party resolution (the central fork) — RESOLVED via the input standard (Requirement 5).** Rather than committing to note-NER on client data, we raise the input bar: structured party records (incl. attorneys/firms/marketers) become **Tier 2** of the standard, shifting extraction to the client/clearinghouse. Client-note-NER is demoted to **optional Tier-3 best-effort enrichment**. Internal probabilistic *party* resolution against the reference graph remains core (the moat); we still never clean clients' structured claim fields. This preserves "contract, not consultancy" and avoids betting v1 on note-NER yield over terse notes. Residual guardrail still required: precision-first thresholds + confidence-carried edges + human review band, because false merges manufacture fake rings.
+- **Still open:** (a) FHIR-CARIN-profile-first vs. flat-tabular-profile-first for the v1 contract (FHIR rides the CMS mandate but is heavier; flat tabular is faster to pilot). (b) Build the confidential-computing (TEE) hosted option in the M-series or defer until a no-self-host client appears. (c) Whether to pursue a clearinghouse integration partnership early (accelerates onboarding, adds BD surface) or stay direct-only through first pilots.
 - Weak-label weight as a config field (`train.weak_label_weight`) vs. folded into the label store.
 - OpenCorporates Enterprise budget vs. FL/NY/OH + on-demand state lookups.

@@ -51,9 +51,9 @@ Explicitly **not accepted:** raw X12 837/835 EDI (warehouse extracts only, v1), 
 4. **Local note embedder** (shipped utility) — note_text → 768-d `note_emb` on their hardware; raw text never leaves.
 5. **Coverage report** (deterministic counts, no records): NPI match rate against the reference snapshot, address canonicalization rate, outcome volume by disposition and year, claims-per-provider distribution.
 
-### Phase 3 — Feasibility gates (go/no-go, decided from the coverage report alone)
+### Phase 3 — Feasibility gates and tier assignment (decided from the coverage report alone)
 
-Default thresholds — tune with experience, but agree on them *before* Phase 2:
+The gates below assign the client a **standard tier** (product-scope Requirement 5), not just pass/fail: Tier 1 (claims + NPIs) → provider-centric scoring; Tier 2 (+ structured parties incl. attorneys/firms) → full ring detection; Tier 3 (+ notes/embeddings) → richest evidence. A client below Tier 2 is onboarded at the tier they support and grown later, rather than rejected. Default thresholds — tune with experience, but agree on them *before* Phase 2:
 
 | Gate | Default threshold | Why |
 |---|---|---|
