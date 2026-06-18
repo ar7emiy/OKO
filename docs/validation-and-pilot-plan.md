@@ -5,6 +5,8 @@
 
 The validation problem has a structural advantage: **the provider-level half of OKO's claim can be proven on fully public data with real labels.** Exclusions and indictments are dated public events; the reference graph is built from dated public snapshots. Claim-level proof requires either synthetic claims (mechanism proof) or a blind pilot on client infrastructure (field proof). The program below sequences all three.
 
+**Guiding principle — land on zero client conformance.** The proof must be strong enough that a client never has to weigh "do we conform our data to them" before believing — they believe *first*, on data they did not lift a finger to prepare, then conform. So the sequencing is deliberate: **Track A and Track C require zero client data; the first pilot is Tier-1 only** (claims + NPIs they already have — no NER, parties, or events); the maximal standard is the *expansion*, never the entry bar (product-scope: "Land-and-expand"). These tests must be *hyper-realistic* — real entities, real outcomes, honest time-ordering — not toy demos.
+
 ---
 
 ## Track A — Temporal backtest on public data (flagship)

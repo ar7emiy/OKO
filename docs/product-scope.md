@@ -45,6 +45,14 @@ Precision about where the signal lives: a *direct* hit (claim touches a LEIE-exc
 - **Rank-stability monitoring across retrains.** Investigators lose trust if the queue reshuffles arbitrarily. Track rank correlation between model versions; gate deployments on it alongside AUC.
 - **Exploration slice in the review queue.** SMEs only label what we surface — a pure exploit loop confirms itself. A small randomized/diversity slice of the queue (config-driven %) keeps the label distribution honest. Cheap, but only if planned now.
 
+### Two scores, not one — and it resolves the leakage tension
+
+Carriers value two distinct outputs, and they are two different prediction targets — so produce both as **two heads on the shared backbone** (multi-task; modest extension to `models/heads.py`):
+- **Fraud propensity** — P(actually fraud), trained on *confirmed* SIU outcomes. The temporal-leakage rail applies: "was investigated" must not leak into its features.
+- **Investigation-worthiness (referral score)** — P(an investigator should look), trained on *was-referred* events. Here "looks like things that get investigated" is the legitimate target, not leakage.
+
+This **resolves** the earlier leakage worry cleanly: investigation/referral events legitimately *train the referral head* and are *excluded from the fraud head's features* — same data, two roles, separated by which head it serves. Operationally the two are both wanted (a triage queue vs. a confirmed-fraud focus), and their **divergence is itself signal**: high propensity + never investigated = a blind spot; always investigated + never confirmed = wasted SIU effort. Honest caveat: the referral head learns to *mimic the client's existing investigation behavior* (with its biases) — excellent for scaling current triage, but the **fraud head is where novel-fraud lift comes from**; don't sell referral as "finding new fraud."
+
 ## The baseline gate (non-negotiable)
 
 Before the GNN is trusted (or sold) as the scorer, build the **XGBoost baseline on graph-derived features** — hops-to-nearest-excluded, address entity-density, reassignment fan-in, officer-overlap counts, computed from the *same* reference graph. Much of bad-actor-proximity value is capturable by hand-crafted graph features in a GBM that is explainable nearly for free (SHAP). The GNN must demonstrate lift over that — not over a feature-poor strawman — or it is complexity tax. Either outcome is a win: lift proven → sell the GNN with evidence; lift absent → ship the cheaper model and keep the GNN as a research track. The README has always listed this; it is hereby promoted to a roadmap gate (M4b below).
@@ -125,7 +133,9 @@ This lets us sell to a messy-data client at Tier 1 and grow them, while never si
 ### Privacy: "they send it, we don't see it, we send results back"
 
 Three options, in adoption order — note the founder's instinct maps to TEE, not homomorphic encryption:
-- **v1 — On-prem / VPC deployment (already our design).** OKO runs inside the client environment; data never egresses; we never see it. Solves the privacy requirement outright for any infra-capable client — which is every large carrier/TPA, and what their security teams already demand.
+- **v1 — On-prem / VPC deployment (already our design), which inverts the data flow.** OKO runs inside the client environment; the reference graph (public data, no privacy constraint outbound) ships *in*; resolution and scoring run there; client data never egresses. The "connect external dots with internal ones" the client wants already happens — just on *their* side, with our data shipped in, not their data shipped to us. This is the default and it adds ~no legal complexity (no raw PII/PHI exchange).
+- **v2 — Privacy-preserving record linkage / set intersection (PSI).** If we don't want to ship the *entire* scraped reference graph into every client environment (IP-exfiltration risk) or it is too large, the client tokenizes/hashes their entity keys locally and sends only tokens; we match against the reference graph and return only the matched links, never raw data. Established technique (cross-org healthcare record linkage). Its motivation is **IP-protection**, not privacy — v1 on-prem already solves privacy.
+- **Public vs private data are complementary, not a superset either way.** We can hold far more on the *public* relational axis (co-defendants, shared registrations/addresses, sanctions) than any carrier scrapes — but the carrier's *private* transactional behavior (who billed under whom in their book, internal notes) is unscrapeable. Don't expect scraping to replace their private edge; the product fuses both. Corollary: the richer we make the *public* relational graph, the more we can prove and deliver before a client provides anything (ties to the land-and-expand spine below).
 - **v2 — Confidential computing / GPU TEE (hosted-but-blind).** For clients who can't self-host: client encrypts → computation runs inside a hardware enclave we cannot inspect → encrypted result returned, with remote attestation letting the client cryptographically verify our blindness. Production-ready in 2026: NVIDIA H100/H200 confidential computing runs at 95–99% of native performance (<5% typical overhead), on Azure/AWS, ~10–15% price premium ([NVIDIA](https://developer.nvidia.com/blog/confidential-computing-on-h100-gpus-for-secure-and-trustworthy-ai/), [benchmark](https://arxiv.org/html/2409.03992v2)). This is the credible realization of the encrypt→compute-blind→decrypt idea.
 - **Parked — FHE / MPC.** Literal computation on encrypted data remains impractical for heterogeneous GNNs over large graphs (bootstrapping dominates ~84% of latency; demos are small CNNs). Research watch only; do not promise.
 
@@ -134,6 +144,15 @@ Three options, in adoption order — note the founder's instinct maps to TEE, no
 - **Conformance certification ("OKO-Ready").** The `validate` CLI + coverage report (onboarding playbook Phases 2–3) *are* the conformance test suite. Publish the profile + tests; clients self-certify by passing the tier gates. This creates lock-in and pushes prep work to them, by spec rather than by our labor.
 - **Clearinghouses as certified integration partners.** Availity, Optum/Change, Waystar et al. already transform claims between formats for a living — they are the natural partners to emit OKO-standard output from a carrier's raw systems, so the carrier doesn't do the work *and* we don't run per-client data projects. We define the spec; partners meet it.
 - **A formal standards consortium is a later option, not a now-build** — pursue only on demonstrated market pull; it is a different business and a distraction at this stage.
+
+### Land-and-expand: the standard is the expansion, not the entry bar
+
+The maximal standard (Tiers 2–3, client builds extraction) is the **growth** path, not the price of admission. The entry must require **~zero client conformance**, or the flagship pitch stalls waiting on data maturity. So the motion is:
+1. **Land on zero-conformance proof.** Track A (public-data temporal backtest) and Track C (real-ring replays) need *no client data at all* — real entities, real outcomes, temporally honest. This must be strong enough that conforming becomes a foregone conclusion.
+2. **First pilot at Tier 1 only** — claims + NPIs the client already has, no NER/parties/events. Minimal prep, blind, scored against their own historical outcomes.
+3. **Expand to Tiers 2–3** only after lift is proven and trust is earned.
+
+This is the same lever as the public/private point above: **investing in the public reference graph's relational richness directly lowers client activation energy**, because it makes the zero-conformance proof stronger. Build public breadth first; ask for client data last.
 
 ## Risk register (business)
 

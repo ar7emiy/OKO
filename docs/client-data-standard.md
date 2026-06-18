@@ -12,7 +12,7 @@ This is the contract for what a client provides. It is a **highest-performance t
 1. **The division of labor: client extracts and surfaces; OKO resolves and scores.** The client's job is to *surface* every relevant actor, relationship, event, and narrative as structured rows — **including standing up extraction processes (their own NER) to pull legal entities, parties, and events out of unstructured notes and documents.** OKO's job is to *resolve* those surfaced actors against the scraped reference graph and score the graph. The boundary is extraction (theirs) vs. resolution-against-reference-data + modeling (ours).
 2. **Entity resolution is the product, not client homework.** Clients surface a messy mention (e.g. an attorney name string); OKO connects it to scraped fraud signal. Clients do **not** resolve entities, assign our keys, or clean their claim fields (amounts, codes). They DO extract, surface, and pseudonymize.
 3. **Ask in priority order (§2.1).** "Whatever optimizes performance" is a *ranked* list, not a firehose — so client investment goes to the highest-yield data first (edges and surfacing before documents).
-4. **Vocabulary over container.** Fields anchor to the HIPAA-mandatory code systems (NPI, CPT/HCPCS, ICD-10-CM, POS, CARC/RARC, TIN). Container is a flat table (Parquet/CSV); optional FHIR-EOB / 837 ingestion for clients further along the CMS-interoperability curve.
+4. **Established vocabulary + a thin OKO profile — not a new standard.** We do **not** invent a vocabulary: every field anchors to the HIPAA-mandatory code systems (NPI, CPT/HCPCS, ICD-10-CM, POS, CARC/RARC, TIN) that 837/835 and FHIR already use. We **do** define a thin OKO *profile* — a flat-table selection of those fields — plus a small set of **extensions no claims standard has** (the parties/attorney table, `entity_events`, claimant pseudonymization, resolution refs), because no established standard models attorneys-as-parties or per-entity behavioral history, and those are our differentiator. This mirrors how FHIR CARIN BB is itself a profile on base FHIR. Discipline: anchor everything possible to established vocabulary, keep extensions additive (never redefine an existing concept), minimize the extension surface. Container is a flat table (Parquet/CSV); optional FHIR-EOB / 837 ingestion for clients further along the CMS-interoperability curve.
 5. **Resolution runs where the data lives.** Reference snapshot + resolution engine + scorer deploy into the client environment. No live web calls at scoring time; web-scraping already happened in batch to build the snapshot.
 
 ### 1.1 What moves model performance (the ranking that orders client investment)
@@ -90,11 +90,13 @@ Required fields **bold**. `ref` columns are the client's *own local IDs* (any st
 | **role** | enum: attorney_of_record, referring, servicing_facility, employer, supplier, marketer, other |
 
 ### 3.6 `labels` (optional at onboarding; required for pilot/fine-tune)
+Two label targets, feeding the two scorer heads (product-scope Req 2): **fraud propensity** (confirmed outcomes) and **investigation-worthiness** (was-referred). Supplying both is ideal; either alone is usable.
 | Field | Notes |
 |---|---|
 | **subject_ref** | claim_id or provider_ref |
-| **label** | 1 fraud / 0 not / null unlabeled |
-| disposition, disposition_date | SIU outcome + date (temporal-split discipline) |
+| fraud_label | 1 confirmed fraud / 0 confirmed not / null unknown → trains the fraud head |
+| referred_label | 1 was referred for investigation / 0 not → trains the referral head |
+| disposition, disposition_date | SIU outcome + date (temporal-split discipline; `is_outcome` events held out of fraud-head features) |
 | sample_weight | default 1.0; weak labels lower |
 
 ### 3.7 `entity_events` (Tier 2–3) — behavioral / action history ("actions of all types")
@@ -126,6 +128,13 @@ NPI (providers) · CPT/HCPCS (procedures) · ICD-10-CM (diagnoses) · CMS Place-
 - **Addresses:** passed through the shipped deterministic normalizer → canonical keys matching reference `address` nodes.
 - **Claimant (Category B):** the pseudonymous key links claims internally; **never** resolved against external data.
 - **Unmatched actors → local nodes** with only the client's data. The graph still scores them; they simply carry no scraped context. Latch rate per actor type = our reference-graph coverage of that type (providers near-complete; attorneys/firms grow with Layer-0 scraping).
+
+### 5.1 Where the connections get made (no raw data egress)
+The "connect external dots with internal ones" happens **without the client sending us raw data**, two ways:
+- **Default — ship the reference graph in.** The reference snapshot + resolution engine deploy into the client environment; their data resolves against our shipped public graph locally. This *inverts the flow* (our public data goes to them, not their private data to us) and adds ~no legal complexity.
+- **v2 — privacy-preserving set intersection (PSI).** If shipping the whole reference graph in risks exposing our scraped asset (IP), the client hashes their entity keys locally and sends only tokens; we return only matched links, never raw data. Motivation is IP-protection, not privacy.
+
+Note the data is **complementary, not a superset either way**: our public relational breadth (co-defendants, shared registrations/addresses, sanctions) exceeds what a carrier scrapes, but the carrier's private transactional behavior (who billed under whom in their book) is unscrapeable. The product fuses both.
 
 ## 6. Discipline rails on behavioral & narrative data
 
