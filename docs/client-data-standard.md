@@ -3,16 +3,30 @@
 **Status:** Draft for review (June 2026)
 **Companion docs:** [`product-scope.md`](./product-scope.md) (Req 5: why the standard is part of the product), [`client-onboarding-playbook.md`](./client-onboarding-playbook.md) (how a client conforms), [`data-sourcing-engine.md`](./data-sourcing-engine.md) (the reference graph this joins against).
 
-This is the contract for what a client provides. **It is not a requirement that their data be pre-cleaned or pre-keyed.** The client brings what they have; OKO's pipeline resolves entities against the reference graph **inside the client's environment** (on-prem/VPC, or a confidential-computing enclave) — raw data never egresses. The standard defines the *shape* of the extract, not a data-quality bar the client must hit alone.
+This is the contract for what a client provides. It is a **highest-performance target**, not a lowest-common-denominator minimum: it lays out everything that optimizes model performance on the assumption that clients will build the processes — including **extracting structured data from their own unstructured notes and documents** — to meet it. The **tiers (§7) are a maturity ramp** toward this target, so a less-mature client still onboards at the tier they support today and grows. Resolution and scoring run **inside the client's environment** (on-prem/VPC, or a confidential-computing enclave) — raw data never egresses.
 
 ---
 
 ## 1. First principles
 
-1. **Entity resolution is the product, not client homework.** Clients have incomplete, messy data on the actors in a claim (especially attorneys/firms — often just a name). Connecting those messy mentions to our scraped reference graph is the core value. The client surfaces actors; **OKO resolves them.**
-2. **What the client does NOT have to do:** clean their claim fields (amounts, codes), resolve entities, or assign our keys. What they DO: pull a flat extract from the warehouse they already have, and *surface* actors as structured rows.
-3. **Vocabulary over container.** Fields are anchored to the HIPAA-mandatory code systems (NPI, CPT/HCPCS, ICD-10-CM, POS, CARC/RARC, TIN) that every payer already stores. The container is a flat table (Parquet/CSV) pulled by a warehouse query — cheapest and most universal. Optional FHIR-EOB / clearinghouse-837 ingestion paths exist for clients further along the CMS-interoperability curve.
-4. **Resolution runs where the data lives.** The reference snapshot + resolution engine + scorer deploy into the client environment. No live web calls at scoring time; the web-scraping already happened in batch to build the snapshot.
+1. **The division of labor: client extracts and surfaces; OKO resolves and scores.** The client's job is to *surface* every relevant actor, relationship, event, and narrative as structured rows — **including standing up extraction processes (their own NER) to pull legal entities, parties, and events out of unstructured notes and documents.** OKO's job is to *resolve* those surfaced actors against the scraped reference graph and score the graph. The boundary is extraction (theirs) vs. resolution-against-reference-data + modeling (ours).
+2. **Entity resolution is the product, not client homework.** Clients surface a messy mention (e.g. an attorney name string); OKO connects it to scraped fraud signal. Clients do **not** resolve entities, assign our keys, or clean their claim fields (amounts, codes). They DO extract, surface, and pseudonymize.
+3. **Ask in priority order (§2.1).** "Whatever optimizes performance" is a *ranked* list, not a firehose — so client investment goes to the highest-yield data first (edges and surfacing before documents).
+4. **Vocabulary over container.** Fields anchor to the HIPAA-mandatory code systems (NPI, CPT/HCPCS, ICD-10-CM, POS, CARC/RARC, TIN). Container is a flat table (Parquet/CSV); optional FHIR-EOB / 837 ingestion for clients further along the CMS-interoperability curve.
+5. **Resolution runs where the data lives.** Reference snapshot + resolution engine + scorer deploy into the client environment. No live web calls at scoring time; web-scraping already happened in batch to build the snapshot.
+
+### 1.1 What moves model performance (the ranking that orders client investment)
+
+For a heterogeneous GNN fraud scorer, marginal value runs **top-down**:
+
+1. **Entity surfacing + resolution keys** — no graph exists without surfaced, resolvable actors.
+2. **Relationship edges** — the GNN's core power; especially keyless-party edges (attorney↔claim↔clinic).
+3. **Labels** — scarce supervised signal (SIU outcomes, dated).
+4. **Behavioral / temporal entity history** (`entity_events`) — fraud is temporal (billing velocity, procedure drift, time-clustering).
+5. **Unstructured narrative embeddings per entity** (`entity_narrative`) — rich latent signal + agent evidence; noisier, diminishing without 1–3.
+6. **Full source documents** — richest but highest extraction cost.
+
+Clients build top-down; we never ask for #6 before #1–2 are solid.
 
 ## 2. The two entity categories (the load-bearing distinction)
 
@@ -83,11 +97,24 @@ Required fields **bold**. `ref` columns are the client's *own local IDs* (any st
 | disposition, disposition_date | SIU outcome + date (temporal-split discipline) |
 | sample_weight | default 1.0; weak labels lower |
 
-### 3.7 `notes` (Tier 3, optional)
+### 3.7 `entity_events` (Tier 2–3) — behavioral / action history ("actions of all types")
+A dated timeline per entity — the client's *private* behavioral record, which the public reference graph cannot contain. Feeds temporal/behavioral node features and event edges.
 | Field | Notes |
 |---|---|
-| **claim_id** | |
-| note_text **or** note_embedding | raw text embedded locally → 768-d vector; raw text never egresses. Tier-3 NER may surface additional `parties` rows. |
+| **subject_ref** | the entity this event is about (provider_ref / party_ref / claim_id / claimant_key) |
+| **event_type** | enum: claim_submitted, claim_denied, prior_referral, prior_investigation, license_action, sanction, address_change, ownership_change, … |
+| **event_date** | **required** — every event is date-stamped (leakage rail, §6.1) |
+| attributes | typed payload (amount, code, counterparty_ref, …) |
+| **source** | provenance (claim system, SIU case, correspondence, …) |
+| is_outcome | true for investigation/disposition events — held out of features for claims predating `event_date` (§6.1) |
+
+### 3.8 `entity_narrative` (Tier 3) — unstructured per-entity text
+Notes, SIU narratives, demand letters, correspondence **about an entity** (not only a claim). The architecture already supports note embeddings on *every* node type (`data[ntype].note_emb`), so this is natively ingestible.
+| Field | Notes |
+|---|---|
+| **subject_ref** | claim_id / provider_ref / party_ref (Category-A actors preferred; claimant narrative minimized — §6) |
+| narrative_text **or** narrative_embedding | embedded locally → 768-d vector; raw text never egresses |
+| doc_type, doc_date | provenance + date (leakage rail applies) |
 
 ## 4. Code systems (the vocabulary anchor)
 
@@ -100,36 +127,40 @@ NPI (providers) · CPT/HCPCS (procedures) · ICD-10-CM (diagnoses) · CMS Place-
 - **Claimant (Category B):** the pseudonymous key links claims internally; **never** resolved against external data.
 - **Unmatched actors → local nodes** with only the client's data. The graph still scores them; they simply carry no scraped context. Latch rate per actor type = our reference-graph coverage of that type (providers near-complete; attorneys/firms grow with Layer-0 scraping).
 
-## 6. Privacy & pseudonymization
+## 6. Discipline rails on behavioral & narrative data
 
-- Runs on client infra / enclave; raw claim and member data never leaves their environment.
-- **claimant_key** is computed by the client (stable salted hash of member identity) *before* data enters OKO. OKO never receives member PII.
+### 6.1 Temporal / leakage discipline (the biggest risk in ingesting history)
+Every `entity_events` and `entity_narrative` row carries a date. An event flagged `is_outcome` (investigation, referral, disposition, sanction) **must be held out of features for any claim predating its `event_date`** — otherwise the model learns "this entity was investigated" ⇒ "this entity is fraud," which is label leakage, not signal. This is the same temporal-split discipline as enforcement weak labels (sourcing doc §4.3).
+
+### 6.2 Privacy & pseudonymization
+- Runs on client infra / enclave; raw claim, member, and narrative data never leaves their environment.
+- **claimant_key** is a client-computed stable salted hash of member identity, applied *before* data enters OKO. OKO never receives member PII.
+- **Behavioral/narrative history is rich for Category-A public actors** (providers, attorneys — defensible) and **minimized + gated for Category-B claimants** (full action narrative is medical-history-sensitive and FCRA-adjacent; capture only what a specific use case justifies).
 - No SSN, no DOB, no biometrics ingested.
-- Category-A resolution operates on business/licensed-professional names and addresses (low sensitivity), not patient data.
-- Cross-client claimant linkage (same fraudster across carriers) is **out of scope v1** — it would require a shared hashing scheme or privacy-preserving set intersection; noted as future.
+- Cross-client claimant linkage (same fraudster across carriers) is **out of scope v1** — needs a shared hashing scheme or privacy-preserving set intersection; noted as future.
 
 ## 7. Tiers & conformance
 
 | Tier | Client provides | Product |
 |---|---|---|
 | **1 — Core** | claims, claim_lines, providers (+ labels for pilot) | provider-centric scoring |
-| **2 — Parties** | + parties, claim_party_links | ring detection (the differentiator) |
-| **3 — Narrative** | + notes/embeddings | richest evidence; Tier-3 NER may surface more parties |
+| **2 — Parties + events** | + parties, claim_party_links, entity_events | ring detection + behavioral/temporal signal (the differentiator) |
+| **3 — Narrative** | + entity_narrative (+ client-side NER feeding more parties/events) | richest latent signal + agent evidence |
 
-Conformance is mechanical: the `validate` CLI checks schema + code systems; the coverage report (counts only, no records) reports NPI match %, address canonicalization %, party-resolution %, label volume — and **assigns the achieved tier**. A client below Tier 2 onboards at the tier they support and grows; they are not rejected.
+Reaching Tier 2–3 generally requires the client to **build extraction processes** (their own NER on notes/documents) to surface parties and events structurally. The tiers are a maturity ramp: conformance is mechanical (the `validate` CLI checks schema + code systems; the coverage report — counts only, no records — reports NPI match %, address canonicalization %, party-resolution %, event/narrative coverage, label volume) and **assigns the achieved tier**. A client below Tier 2 onboards where they are and grows; they are not rejected.
 
 ## 8. Division of labor (the onboarding pitch)
 
 | Step | Client | OKO (shipped, automated) |
 |---|---|---|
 | Extract | warehouse query to the table specs | spec + field dictionary |
-| Surface actors | pull provider NPIs (mostly already in lines) and **attorney/party names into the parties table** | — |
+| Surface actors | pull provider NPIs and **surface attorneys/parties + events — including NER over their own notes/documents** | — |
 | Pseudonymize | hash member identity → `claimant_key` | hashing spec |
 | Validate / normalize / embed | run the CLIs locally | `validate`, `normalize-addresses`, local embedder |
 | **Resolve entities** | — | **resolution engine (the product), in-environment** |
 | Coverage / tier | read the report | coverage report + tier assignment |
 
-The client surfaces; OKO resolves and scores. No client-side data cleaning, no key assignment, no data egress.
+The client extracts and surfaces (incl. structured-from-unstructured); OKO resolves and scores. No client-side entity resolution, no key assignment, no data egress.
 
 ## 9. Open items for review
 
