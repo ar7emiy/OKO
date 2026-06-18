@@ -16,7 +16,7 @@ Posture (unchanged): OKO is a model/intelligence provider, not a data-onboarding
 | **0 — Reference graph** | Public bad-actor + registry data fused into a versioned graph snapshot (NPPES, LEIE, SAM, PECOS reassignment edges, registries, enforcement actions) | Designed — sourcing doc |
 | **1 — Scoring engine** | Heterogeneous GNN: self-supervised pretrain → fine-tune → calibrated ranking of `claim` nodes | Built (this repo); cold-start path designed |
 | **2 — Evidence & explanation** | Per-claim evidence-subgraph extraction + agentic narration with public-record citations | Scoped below |
-| **3 — Review queue & label capture** | Thin SME interface: ranked queue, accept/reject, label persistence | Scoped below (deliberately thin) |
+| **3 — Review queue & feedback capture** | Case-level review UI (thin) over a structured feedback schema (load-bearing): disposition + connection-validity + evidence-quality, routed to their sinks | Scoped below (Requirement 4) |
 
 ## Requirement 1 — Scraped bad-actor data
 
@@ -61,6 +61,41 @@ Raw embeddings and attention weights are not reliable explanation substrates (at
 
 **Sequencing discipline:** evidence-retrieval + citation narration delivers ~80% of investigator trust at ~10% of the effort; learned explainers are added when SME agreement-rate data says narration fidelity is the bottleneck. Do not start with neuron-level interpretability research.
 
+## Requirement 4 — The human feedback loop (review → continuous improvement)
+
+**Verdict: feasible and it sharpens the product rather than expanding it — all in Layers 2–3, no change to the scorer. But the intuition "reviewers approve/reject the model's connections and that trains the model" must be decomposed, or the loop collects feedback it cannot use.**
+
+### Feedback has three sinks, not one
+
+The single most important correction: connection-level feedback does not train the scorer's weights. It routes to three different systems, and conflating them is the central design risk.
+
+| Feedback type | Example | Sink | Effect |
+|---|---|---|---|
+| **Case disposition** | "this claim/ring is fraud" / "clean" | **Scorer** (existing fine-tune: label + `sample_weight`) | Strongest, cleanest accuracy signal. Already supported. |
+| **Connection validity** | "this shared-address link is spurious — registered-agent address" / "legitimate referral" | **Graph cleaning + entity resolution** (edge prune/down-weight, address-type classifier, `same_as` correction) | Highest-leverage: fixing the input graph improves *every* future prediction over it. |
+| **Evidence usefulness** | "the agent's reasoning here was good/weak" | **Explainer** (tune subgraph extraction / learned explainer) | Improves narration quality and reviewer throughput; not a ranking-accuracy signal. |
+
+The trap to retire explicitly: rejecting an edge does not "lower the fraud score" — the GNN's score is not a human-legible sum of edges. Supervising the GNN's internal edge-importances to match human judgment is the least reliable corner of the research space (attention-supervision rarely improves ranking, often hurts). So: **disposition trains the model; connection feedback cleans the graph the model reasons over.**
+
+### The "rich volume" premise is optimistic — design for scarce, structured labels
+
+Self-supervision is the cold-start lever and does *not* depend on review volume; review volume is the fine-tuning lever. SIU labor is scarce (TPA-1: 8 reviewers, ~250 cases/month), so realistic feedback is *hundreds of high-quality structured labels/month*, not thousands — plenty to fine-tune a pretrained model, but it means the UI optimizes for label **quality and structure**, not throughput. Counterintuitively, high volume drawn only from the model's high-confidence region *worsens* selective-label bias (the model learns to agree with itself) — which is exactly why the exploration slice (Requirement 2) is mandatory, not optional, the moment a feedback loop exists.
+
+### UX/UI shape (the founder's instinct, made precise)
+
+Well-trodden pattern: technology-assisted review (e-discovery TAR) crossed with a bank fraud-alert queue. Three specifics:
+
+1. **Unit of review is a *case*, not an edge.** A flagged claim/ring *with its evidence subgraph*; the reviewer affirms/corrects specific evidence items within it. Hierarchical, not a flat swipe-deck of edges (too granular, low-information, exhausting).
+2. **Reframe authoring → verifying.** The agent pre-drafts the case narrative with public-record citations; the reviewer verifies or corrects the agent's asserted connections. Faster, and it makes feedback naturally structured — every correction attaches to a specific assertion.
+3. **Structured reason codes first, free text second.** A small taxonomy (spurious-address, legitimate-referral, confirmed-ring-member, identity-mismatch…) maps each correction directly to a sink and is consistent across reviewers and immediately trainable; free text feeds the agent's context and is parsed later. This delivers both throughput and trainability — the resolution of the "consistent text-based feedback" goal.
+
+### Two design decisions this surfaces
+
+- **A feedback taxonomy that routes each signal to its sink** (disposition → scorer; connection-validity → graph/resolution; evidence-quality → explainer). Without it, feedback accumulates unusable. This makes Layer 3's *schema* strategically load-bearing even though its *UI* stays minimal — the schema is the actual flywheel.
+- **Feedback scoping: client-local vs. global.** Structural corrections to *public* reference data (e.g., flagging a registered-agent address) may promote to the shared reference graph with review and help every client; anything touching client claims/dispositions stays client-private. Privacy and anti-overfitting both demand this line be explicit.
+
+Plus one data-quality operational note: with multiple reviewers, track inter-reviewer agreement and lightly adjudicate the gold set — disagreement is label noise that silently caps model quality.
+
 ## Risk register (business)
 
 | Risk | Read | Mitigation |
@@ -79,6 +114,10 @@ Raw embeddings and attention weights are not reliable explanation substrates (at
 - **M5** — Tier-3 enforcement scrapers + Tier-2 procurement (per sourcing doc), feeding richer weak labels and provenance.
 - **M6 — Evidence layer.** Per-claim evidence-subgraph extraction API (k-hop + importances + provenance), exploration-slice and rank-stability instrumentation.
 - **M7 — Agent v1.** GraphRAG narration over evidence subgraphs with public-record citations; SME agreement-rate telemetry from day one (it decides when learned explainers are worth it).
-- **M8 — Thin review queue** (Layer 3): ranked queue, accept/reject, label persistence into the fine-tuning flywheel. Deliberately minimal — it exists to feed labels and host the agent's output, not to be a workflow product.
+- **M8 — Review queue & feedback capture** (Layer 3, Requirement 4): case-level review UI (thin) over a structured feedback schema (load-bearing) that routes disposition → scorer fine-tune, connection-validity → graph/resolution cleaning, evidence-quality → explainer. Agent-verification framing, reason codes + free text, inter-reviewer agreement tracking, client-local vs global feedback scoping. It exists to feed the flywheel and host the agent's output, not to be a workflow product.
 
 Parked, explicitly: court-records expansion (co-defendant edges from RICO/takedown dockets, PACER RSS pending-case feeds) — high-value Layer-0 enrichment once M1–M4 land; learned explainers (post-M7, telemetry-driven); non-NPI verticals (auto/P&C) pending a linkage-key strategy.
+
+## Research watch
+
+- **Alper — "Adaptive Graph Refinement and Label Propagation with LLMs for Cost-Effective Entity Resolution"** ([arXiv:2605.25814](https://arxiv.org/abs/2605.25814), 2026). Relevant to M2 (entity resolution). Critiques the static blocking→matching→clustering cascade (exactly our planned Splink pipeline) for producing a sparse graph with missing/noisy edges, and proposes unified iterative probabilistic label propagation over an evolving graph with budget-aware LLM adjudication. **Disposition:** harvest the *insight* now (treat resolution as iterative refinement over an evolving graph, not a one-shot cascade; budget-aware LLM only on the ambiguous band — which our §3.4 stage 4 already anticipates), but do **not** adopt the framework as core infra — it is a 2026 paper with no production track record, and LLM-in-the-loop matching adds nondeterminism and external dependency to a layer we need auditable and reproducible (`config.seed`). Keep deterministic-first + Splink as the reproducible backbone; benchmark Alper-style propagation against it only *after* the M2 baseline exists. Note its scope is single-dataset "dirty" ER, whereas most of our linkage has reliable keys (NPI/EIN/UEI) — its value lands on the keyless residual (LEIE-without-NPI, SAM, OFAC, cross-state registries).
