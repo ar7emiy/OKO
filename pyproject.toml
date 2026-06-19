@@ -21,6 +21,7 @@ ingest = [
     "pyarrow",
     "duckdb",
     "pandera",
+    "usaddress",
 ]
 
 [project.scripts]
