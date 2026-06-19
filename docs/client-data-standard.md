@@ -1,6 +1,7 @@
 # OKO Client Data Standard — v1 (Medical Claims)
 
-**Status:** Draft for review (June 2026)
+**Status:** Draft for review (June 2026) — spec only; not yet implemented (no connectors/validators built against it)
+**Last updated:** 2026-06-19
 **Companion docs:** [`product-scope.md`](./product-scope.md) (Req 5: why the standard is part of the product), [`client-onboarding-playbook.md`](./client-onboarding-playbook.md) (how a client conforms), [`data-sourcing-engine.md`](./data-sourcing-engine.md) (the reference graph this joins against).
 
 This is the contract for what a client provides. It is a **highest-performance target**, not a lowest-common-denominator minimum: it lays out everything that optimizes model performance on the assumption that clients will build the processes — including **extracting structured data from their own unstructured notes and documents** — to meet it. The **tiers (§7) are a maturity ramp** toward this target, so a less-mature client still onboards at the tier they support today and grows. Resolution and scoring run **inside the client's environment** (on-prem/VPC, or a confidential-computing enclave) — raw data never egresses.

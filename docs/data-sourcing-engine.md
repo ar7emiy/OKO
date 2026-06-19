@@ -1,6 +1,7 @@
 # OKO Data Sourcing Engine — Requirements, Research, and Design
 
-**Status:** Proposal (research complete, implementation not started)
+**Status:** Active build — M1 ingestion shipped and staged against live .gov data; M2 resolution partially built (see "Implementation status (2026-06-19)" under §6).
+**Last updated:** 2026-06-19 11:37 CDT (design intent below is the target; build state is summarized under §6)
 **Companion doc:** [`product-scope.md`](./product-scope.md) — overall product scope, north star, and roadmap (extends §6 of this doc with M4b–M8).
 **Scope:** Real-world entity data acquisition for the OKO fraud-scoring graph — data requirements criteria, source catalog, scraping/ingestion methods and stack, synthetic-overlay strategy, and the user data-loading path.
 
@@ -248,6 +249,17 @@ Concretely, the suite provides:
 ---
 
 ## 6. Build order (proposed)
+
+### Implementation status (2026-06-19)
+
+What is actually built today, vs. the design intent above (which remains the target):
+
+- **M1 — DONE, verified against live .gov data.** `oko_ingest` ingests and stages, with real counts: NPPES 9,620,937 · LEIE 83,464 · PECOS enrollment 2,981,799 · PECOS reassignment 3,527,875 edges. Snapshot-vintage store + pandera validation working.
+  - **SAM deferred** (not D&B-clean for commercial use; LEIE covers healthcare exclusions for v1 — see §3.3 / SAM ToU note). Built but unused pending a key + D&B-record filtering + counsel sign-off.
+- **M2 — PARTIAL.** Built: **deterministic resolution** (custom CPU union-find on exact NPI/UEI/CAGE/enrollment keys — *not* igraph/networkx, no GPU), normalization via **`usaddress`** (libpostal/CASS/Geocodio from §3.4 step 2 deferred — libpostal won't build on Windows), canonical node/edge construction, and the immutable **Reference Graph Snapshot publisher** (`oko_ingest/resolve/`, `oko_ingest/publish/`). Deferred: the **probabilistic pass** (Splink/Alper — §3.4 step 3, currently a documented stub `resolve/probabilistic.py`), the `address_type` classifier, and Geocodio CASS validation. Resolution code is fixture-tested (25 tests) but **not yet run on the 9.6M real rows**.
+- **M3–M8 — not started.**
+
+The whole reference-graph build is **CPU-only, single-machine** (pandas + DuckDB + union-find). No GPU is required for M2. GPU only ever appears for the optional Layer-1 GNN training (separate, `oko/`, defaults to CPU) and the v2 confidential-computing TEE deployment option (product-scope Req 5) — neither is part of M2.
 
 1. **M1 — Tier 1 bulk ingestion**: NPPES (monthly+weekly merge), LEIE, SAM extracts, PECOS (+reassignment edges), staging + pandera schemas. No scraping at all yet. **Includes snapshot-vintage retention from day one** (immutable dated snapshots of every source, plus backfill of historical vintages where archives allow, e.g. NBER NPPES mirrors) — required for as-of graph reconstruction, which the Track-A temporal backtest in [`validation-and-pilot-plan.md`](./validation-and-pilot-plan.md) depends on.
 2. **M2 — Resolution**: address pipeline (libpostal/Geocodio), Splink models, `address_type` classifier, canonical node publication → first Reference Graph Snapshot.

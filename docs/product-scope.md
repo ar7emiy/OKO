@@ -1,6 +1,7 @@
 # OKO Product Scope & Roadmap
 
 **Status:** Aligned (June 2026)
+**Last updated:** 2026-06-19 (reviewed against build state: Layer 0 partially built, Layer 1 scoring engine exists, Layers 2–3 not started — see `data-sourcing-engine.md` §6)
 **Companion docs:** [`data-sourcing-engine.md`](./data-sourcing-engine.md) (Layer 0 design), [`client-data-standard.md`](./client-data-standard.md) (v1 input contract), [`validation-and-pilot-plan.md`](./validation-and-pilot-plan.md) (proof program & blind pilot), [`client-onboarding-playbook.md`](./client-onboarding-playbook.md) (onboarding framework + worked TPA case), repo README (Layer 1 scoring engine).
 
 ## North star

@@ -1,6 +1,7 @@
 # OKO Client Onboarding Playbook — Framework and Worked TPA Case
 
-**Status:** Aligned (June 2026)
+**Status:** Aligned (June 2026) — framework only; onboarding tooling (`validate` CLI, coverage report) not yet built
+**Last updated:** 2026-06-19
 **Companion docs:** [`validation-and-pilot-plan.md`](./validation-and-pilot-plan.md) (pilot protocol this playbook feeds), [`data-sourcing-engine.md`](./data-sourcing-engine.md) §5 (data contract, posture).
 
 **Posture, restated because it governs everything here:** OKO does no client data processing. We provide the specification, deterministic tooling, and the reference graph; **the client performs every step that touches their data, inside their environment.** Onboarding is them conforming to a contract — not us running a data project. This is what makes the feasibility test fast, repeatable, and zero-egress.

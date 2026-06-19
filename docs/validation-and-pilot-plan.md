@@ -1,6 +1,7 @@
 # OKO Validation & Pilot Plan — Proving Accuracy and Value Without Client Data
 
-**Status:** Aligned (June 2026)
+**Status:** Aligned (June 2026) — plan only; no validation runs executed yet (the reference graph that Track A needs is not yet built from real data)
+**Last updated:** 2026-06-19
 **Companion docs:** [`product-scope.md`](./product-scope.md), [`data-sourcing-engine.md`](./data-sourcing-engine.md), [`client-onboarding-playbook.md`](./client-onboarding-playbook.md)
 
 The validation problem has a structural advantage: **the provider-level half of OKO's claim can be proven on fully public data with real labels.** Exclusions and indictments are dated public events; the reference graph is built from dated public snapshots. Claim-level proof requires either synthetic claims (mechanism proof) or a blind pilot on client infrastructure (field proof). The program below sequences all three.
