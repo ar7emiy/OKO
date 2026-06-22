@@ -138,5 +138,50 @@ Ordered by value-per-effort, each phase independently shippable:
 ## 7. One-paragraph answer for the TPA
 
 > What you're doing — fuzzy-matching entity names against a watch list — is **entity resolution**, and it's the thing our engine is built around. We'd replace the brittle parts directly: first, **use your NPIs and EINs as exact joins** (no fuzzy matching needed when a real identifier is present); second, **normalize names and addresses** with our built-in canonicalizers so legal-suffix and abbreviation variants stop slipping under your 90% cutoff and addresses become a real disambiguator for common names; third, **make category a soft, optional signal instead of a hard gate** — a missing or wrong category from your note extractor will no longer veto a real match, and once an entity resolves we read its *true* category from authoritative provider/registry data rather than trusting the note classifier at all. That gives you a **calibrated match confidence with a human-review band** instead of one yes/no. Then, separately, we score **risk** from graph structure — proximity to your NICB/BOLO entities and to public bad-actor data through shared addresses, shared NPIs, and co-billing — starting with a fast, fully explainable model and adding the GNN only if it proves additional lift. All of it runs inside your environment; your notes never leave.
-</content>
-</invoke>
+
+---
+
+## 8. Follow-up: notes are the primary source, and the value is *around* the name
+
+A sharper version of the problem, raised after the above. For this TPA, **notes are the primary data source right now**, and the entities in them rarely carry an NPI/EIN. What the notes *do* carry is **contextual signal wrapped around each name** — an email address, a location or "section," and the entity's **behaviors and actions** — and the TPA's pain is that they can **neither extract that context nor resolve on it**. They're stuck matching a bare name string.
+
+This is the **keyless-party / dirty-ER case** that `product-scope.md` (Requirement 1, "keyless-party correction") already names as *close to the main event, not a residual edge case*, and it sits exactly on the design seam the sourcing doc calls out: an unresolved mention is **still scored from its own features, its note embedding, and whatever edges did resolve** (`data-sourcing-engine.md` §5.3, graceful degradation). So the architecture is already pointed at this; the question is which levers to pull.
+
+### Three complementary tracks
+
+**Track 1 — Use the context *without* extracting it into fields (note/context embeddings).** This is the biggest unlock for a notes-primary client and needs no structured extraction at all.
+- The architecture stores `data[ntype].note_emb` on **every** node type (not just claims). Embed the **note span around each name** — the sentence/paragraph that includes the email, the location, the described behavior — into a 768-d vector and attach it to that **entity** node (the `entity_narrative` table in `client-data-standard.md` §3.8 is exactly this contract).
+- That single vector then powers three things at once: **(a) semantic blocking** — Alper Phase 0: an ANN/KNN graph over embeddings finds candidate same-entity mentions by *contextual* similarity, so "J. Smith, ortho, downtown, jsmith@clinicx" lands next to its other mentions even when the **name string itself is degraded**; **(b) a risk feature** — the context feeds the GBM/GNN directly; **(c) similarity retrieval** — "find entities whose note-context looks like this known BOLO actor." The information they *can't* parse into columns is still fully usable as latent signal.
+
+**Track 2 — Extract the *few* high-value structured signals and turn them into keys/features.** Not full NER — just the high-yield quasi-identifiers.
+- **Email is the headline.** An email is a near-identifier — far more discriminating than a name and often the only quasi-key in a note. Add a typed `EMAIL:<normalized>` key to `deterministic.py` so an exact email match becomes a **strong anchor** — the keyless-party substitute for NPI/EIN. Caveat handled the same way as the John-Doe problem: **shared/role emails** (`frontdesk@`, `info@clinic.com`) are the email analog of a common name, so frequency-down-weight them — a unique personal email is a strong edge, a shared inbox is a weak one. **Phone numbers** behave identically; add as another typed key.
+- **Location / "section"** → the existing address normalizer + `located_at` edges; even partial (city/state, or a facility/department "section") is a probabilistic feature, never a requirement.
+- **Behaviors / actions** → the `entity_events` table (`client-data-standard.md` §3.7): a **dated per-entity timeline** (referrals, denials, address/ownership changes, billing-velocity events…) that feeds temporal/behavioral node features and event edges. This is precisely how "their actions" become structure — and the temporal-leakage rail (§6.1) applies (outcome events held out of features for prior-dated claims).
+
+**Track 3 — Help with the extraction itself (the part they say they can't do): in-enclave LLM extraction + adjudication.** This is the real capability gap and the one posture shift.
+- OKO's Alper Phase-2 design already pulls an LLM **into the resolution loop as the adjudicator of the Fellegi-Sunter gray band** (`product-scope.md` "Research watch"; `data-sourcing-engine.md` §3.4 stage 4). The natural extension for a notes-primary client: the **same in-enclave LLM also extracts** the contextual fields (email, role/category, location, described actions) from the note span **and adjudicates** same-vs-different-entity decisions *using that context* — i.e., it reads "the John Doe who emails from the law firm and keeps showing up referring to the same clinic" and resolves accordingly. That is exactly the reasoning the TPA cannot do today.
+- **Non-negotiable rails** (`product-scope.md` Phase-2 adoption gates + `client-data-standard.md` §6): runs **inside the client enclave**, **never** ships client notes/PII to an external LLM; **every** extraction and pair-verdict is cached as an immutable, versioned, provenance-logged decision (model + prompt + verdict) so reruns reproduce and every match is auditable; **Category-A public actors** (providers, attorneys, firms) are resolved in the clear, while **Category-B claimant** context is pseudonymized/minimized (FCRA-adjacent, medical-history-sensitive).
+
+### What needs to adjust (concrete)
+
+| # | Change | Size | Notes |
+|---|---|---|---|
+| 1 | Add `email_key` / `phone_key` typed keys + normalizers to `oko_ingest/resolve/deterministic.py`; union on them | **Small** | Highest value-per-effort for keyless parties; mirrors the existing NPI/UEI/CAGE key pattern |
+| 2 | Build the probabilistic stage (`probabilistic.py` stub → real): **semantic blocking (embeddings + ANN)** + Fellegi-Sunter over name/email/phone/address/**context-embedding** with term-frequency weighting + banding | **Medium** | The main net-new build; needs their data to tune (EM weights, thresholds) |
+| 3 | Wire **entity-level** note/context embeddings: an entity-scoped vector connector + the shipped local embedder pointed at note spans | **Small–Med** | Architecture already supports `note_emb` per node type; this is plumbing + an embedder run, in-environment |
+| 4 | `entity_events` ingestion + a behavioral/temporal feature extractor (velocity, recency, action-type counts) | **Medium** | Turns "actions" into node features under the leakage rail |
+| 5 | *Optional* in-enclave LLM **extraction + adjudication** service | **Large / new scope** | Crosses the historical "client does extraction" line — see posture decision below; privacy/audit gates mandatory |
+| 6 | (carryover from §5) repoint `FraudScorer.target_node_type` from `"claim"` to `"entity"` | **Small** | Needed for per-entity scoring regardless |
+
+### The posture decision this surfaces (genuinely a product call)
+
+OKO's stated division of labor is **"client extracts (including their own NER over notes), OKO resolves and scores"** (`client-data-standard.md` §1, §8; `product-scope.md` "Open decisions"). A notes-primary client **inverts** that: extraction is the bottleneck they're asking us to solve. Two honest paths:
+
+- **(a) Hold posture — ship Tracks 1–2.** Note-context **embeddings** + **email/phone keys** + **entity_events** get most of the lift while asking the client only to surface a *handful* of fields (or just the note span to embed locally) — a far lighter ask than full NER, and squarely within current scope. **Recommended starting point.**
+- **(b) Extend scope — Track 3.** OKO provides in-enclave LLM extraction/adjudication. Largest value for exactly their gap, but it is **new product surface** with hard privacy/audit obligations and a posture change. Worth doing if notes-primary clients are a target segment — but it's a deliberate decision, not a default.
+
+Both are real; (a) is shippable now and de-risks (b). The choice of how far to move the extraction boundary is the open call.
+
+### One-paragraph answer for the TPA (notes-primary)
+
+> You don't need an NPI or EIN on every name to make notes work for you. First, we capture the **context around each name** — the email, the location, the behavior described — as an **embedding on that entity**, so even when your extractor can't parse those into fields, that context still drives matching (entities with similar context cluster together, even when the name string is messy) and feeds the risk score. Second, we promote the **highest-value identifiers you *can* get from a note — email and phone — into exact-match keys**, which for parties without an NPI are the strongest anchor available (we down-weight shared inboxes like `frontdesk@` the same way we down-weight common names). Third, the **behaviors and actions** in your notes become a **dated timeline per entity** that feeds temporal risk features. The matching becomes a calibrated confidence with a review band, not a 90% name cutoff. If you want us to go further and have the system **read the notes and pull that context out for you**, we can run an LLM-based extractor-and-adjudicator **inside your environment** — your notes never leave, and every decision it makes is logged and reproducible.
