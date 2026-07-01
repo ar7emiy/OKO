@@ -258,3 +258,57 @@ The provider sub-graph gets both values today; the legal/repair/witness universe
 ### One-paragraph answer for the TPA (broader entities)
 
 > The provider focus was a build-order choice, not a limitation of the approach: healthcare providers were the one place a full public registry (NPPES) plus enforcement lists let us build and prove the resolution engine before touching client data. The machinery itself doesn't care what kind of entity it's resolving. For your attorneys, repair shops, and other parties we do three things: **treat EINs, bar numbers, and license numbers as exact-match keys** — same EIN means same shop, full stop; **treat case numbers as connections, not identities** — a shared case links an attorney to a clinic to a body shop on the graph (which is exactly the ring signal we score), but it never merges two people into one; and **witnesses get linked privately** — a repeat witness across unrelated claims lights up without their identity ever being matched against outside data. All of this resolves *within your book* on day one; connections to outside data — bar discipline, corporate registrations, court records — layer on as we expand the public reference graph, and every unmatched entity still gets scored from your own data in the meantime.
+
+---
+
+## 10. Engineering follow-up: scraping modularity, resolution at scale, and the TPA's igraph
+
+Three build questions raised after §9: (a) modularize scraping so adding a source is "API key + press go"; (b) make the entire resolution layer highly scalable (parallelism, Spark, efficient fuzzy matching of lots-against-lots); (c) the TPA already tracks entities and entity attributes on claims in **igraph** — does that help? (They can provide data in any form we specify; igraph is an option, not a requirement.)
+
+### 10.1 Scraping modularity — the skeleton is right; add credentials, a catalog, and orchestration
+
+Honest read of the current layer: **the shape is already correct.** A source implements exactly two methods (`download`, `parse`); everything else — polite fetching (throttle/retry/atomic writes), pandera validation, immutable snapshot staging, provenance — is shared plumbing in `BulkSource.ingest` / `PoliteFetcher` / `SnapshotStore`. Adding a source is a parser plus a registry entry. What's *missing* for "API key + press go":
+
+1. **A credentials concept — currently there is none.** All four built sources are keyless bulk downloads. Add a per-source declaration (`requires_key: bool`, `credential_env: "OKO_COURTLISTENER_TOKEN"`) and teach `PoliteFetcher` to inject auth headers/params from the environment or a keyring. This matters because the next wave of sources is key-shaped: **CourtListener** (API token), **SAM.gov** (API key), **OpenCorporates** (paid key), **Geocodio** (key). Sunbiz (SFTP) needs an SFTP fetch path — one new fetcher method, same politeness contract.
+2. **A source manifest, not just a registry.** Promote per-source metadata to declared class attributes: cadence (monthly/weekly/daily), license tier, key requirement, expected tables. Then `oko_ingest sources` lists the catalog with status, and `oko_ingest check --source X` validates the credential *without* pulling.
+3. **`pull --all` + cadence awareness.** One command walks the registry, pulls every source due for refresh (compare `SnapshotStore.vintages()` against declared cadence), skips ones that aren't. That single command *is* "press go," and it's cron/Actions-schedulable as-is (the orchestration escalation path to Dagster is already in the sourcing doc — asset-per-table maps 1:1).
+4. **A new-source conformance kit.** Convention: every source ships a golden raw-file fixture + expected staged output; a shared parametrized test asserts schema validation, string-dtype discipline, and snapshot round-trip. Makes "add a source" a checklist, not a design exercise.
+5. **What stays code (on purpose):** `parse()`. Every government/registry file has bespoke layout drift — that's irreducible per-source work (~a day each with the kit). The modularity win is that *only* `parse()` and a `download` URL/auth spec are per-source; the target for a new keyed API source is **≤ ~100 lines + fixture**.
+
+Priority expansion order (from §9.5 row 12, unchanged): **Sunbiz → state bar directories → CourtListener/RECAP → OpenCorporates (license decision) → state DOI/contractor licensing.** Plus the TPA's NICB feed and BOLO list as client-local sources through the same interface.
+
+### 10.2 Resolution at scale — shrink first, vectorize second, distribute last
+
+The instinct "fuzzy matching lots-against-lots must be highly efficient" is right, but the biggest lever is **not** parallelism — it's making the comparison space small before any fuzzy comparison runs:
+
+1. **Shrink (orders of magnitude, free).** Deterministic keys first: every NPI/EIN/bar/license/email match removes its records from the fuzzy pool entirely. Then **blocking**: candidate pairs are generated only within blocks (name-key × ZIP3, metaphone × state, ANN neighborhoods over context embeddings — §8 Track 1). Naive all-pairs on 10M × 10M is 10¹⁴ comparisons; blocked, it's typically 10⁷–10⁹ — the difference between impossible and minutes. Blocking quality, not cluster size, decides feasibility.
+2. **Vectorize (single node goes far).** The staging store is already **DuckDB over Parquet** — and Splink, the planned probabilistic engine, runs natively on a **DuckDB backend**: vectorized, multi-core, routinely handles tens of millions of records for linkage on one beefy machine. The TPA's scale (~3M claims/yr; single-digit-millions of party mentions vs. a ~9M-NPI + registry reference graph) is **comfortably single-node** with good blocking.
+3. **Distribute (when forced, not before).** The decisive architectural fact: **Splink's model/config is backend-portable — the same match model runs on DuckDB and on Spark.** So we don't choose between "simple now" and "scalable later"; we write the linkage models once and swap the execution backend when volume demands it (full OpenCorporates breadth at ~230M orgs, or multi-client batch resolution). Standing up Spark *now* would be ops cost with no payload. The commitment to make today is cheap and structural: **keep every resolution stage expressible as dataframe/SQL operations over Parquet** — no Python row loops in the hot path.
+4. **Fix the known hot-path debt.** The current deterministic pass is pure-Python `iterrows()` + an in-memory union-find — correct, deliberate for M2, and not scalable. Replace with columnar key-pair extraction in DuckDB SQL + connected components via **igraph** (C-speed, single-node — this was already the noted M2 deferral: "CPU/union-find, no GPU/igraph") with Spark GraphFrames as the distributed swap-in. Same output contract (`ResolutionResult`), so nothing downstream moves.
+5. **Resolve incrementally.** Snapshots are immutable and monthly; don't re-resolve the world each vintage. New/changed records resolve *against existing clusters* (blocked candidate lookup + scoring), with full re-resolution as a periodic audit job. This is the biggest steady-state efficiency win and falls straight out of the snapshot design.
+6. **Embedding/ANN blocking is embarrassingly parallel** — batch embedding (GPU optional) + FAISS/hnswlib index build are independent of the linkage engine and scale horizontally on their own.
+
+**Ordering discipline:** 1 and 4 are prerequisites; 2 is the default runtime; 3 is a documented swap, exercised only when a concrete volume forces it.
+
+### 10.3 The TPA's igraph — useful as a head start and a return path, not as a pipeline component
+
+They already maintain an entity graph (entities + attributes on claims) in igraph. Three distinct uses, in descending value:
+
+1. **As evidence they're already Tier-2.** An entity graph with claim attributes means the *extraction and linking work the standard asks for is largely done* — their igraph vertices are the `parties` table, their edges are `claim_party_links` (+ some `entity_events`). Export is trivial on their side (`get_vertex_dataframe()` / `get_edge_dataframe()` → Parquet, ~20 lines). Since they can provide any form we specify: **specify the flat-table contract** (`client-data-standard.md` §3) and hand them that snippet. The wire format stays library-agnostic Parquet — we should *not* couple the pipeline to igraph objects.
+2. **As a scoring return path (adoption win).** Their vertex IDs become `party_ref`. We resolve, score, and return **results keyed to their own IDs** — a score table plus a crosswalk (`party_ref → canonical entity_id → matched reference records, with provenance`) that loads straight back into their existing igraph as vertex attributes. Their current tooling keeps working; ours slots in underneath it. Cheap to promise, high perceived value.
+3. **One caution — their identity edges are claims, not ground truth.** Any "same entity" edges in their graph were partly built by the very ≥90%-fuzzy-match process we're replacing (§1). Ingest those as **client-asserted `same_as` evidence with provenance** — strong prior, weighted into the probabilistic score — but never blind-union them, or we inherit their false merges and their misses. (Non-identity edges — entity↔claim participation — carry no such risk and load directly.)
+
+And one internal footnote from 10.2: igraph earns a place in *our* stack too, as the C-speed connected-components engine for single-node clustering — a happy coincidence, not a dependency on their tooling.
+
+### 10.4 Concrete work items (extends §§8–9 tables)
+
+| # | Change | Size | Notes |
+|---|---|---|---|
+| 14 | Credentials support: per-source `credential_env` declaration + `PoliteFetcher` auth injection + `check` command | **Small** | Unblocks every keyed source |
+| 15 | Source manifest metadata (cadence, license, key) + `sources` list command + `pull --all` with vintage-aware skip | **Small–Med** | "Press go" |
+| 16 | SFTP fetch path in the fetcher (Sunbiz) | **Small** | |
+| 17 | New-source conformance kit (golden fixtures + shared parametrized tests) | **Small** | Makes source addition a checklist |
+| 18 | Deterministic pass → DuckDB SQL key-pair extraction + igraph connected components (same `ResolutionResult` contract) | **Medium** | Retires the `iterrows()` hot path |
+| 19 | Probabilistic stage built **on Splink** with backend-portable config (DuckDB now, Spark swap documented) | **Medium** | Absorbs §8 row 2 |
+| 20 | Incremental resolution mode (delta records vs. existing clusters; periodic full re-resolve audit) | **Medium** | Steady-state efficiency |
+| 21 | TPA igraph intake: export snippet (their side) + `same_as`-as-evidence ingestion + score/crosswalk return keyed to `party_ref` | **Small–Med** | The adoption sweetener |
