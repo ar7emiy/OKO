@@ -312,3 +312,57 @@ And one internal footnote from 10.2: igraph earns a place in *our* stack too, as
 | 19 | Probabilistic stage built **on Splink** with backend-portable config (DuckDB now, Spark swap documented) | **Medium** | Absorbs §8 row 2 |
 | 20 | Incremental resolution mode (delta records vs. existing clusters; periodic full re-resolve audit) | **Medium** | Steady-state efficiency |
 | 21 | TPA igraph intake: export snippet (their side) + `same_as`-as-evidence ingestion + score/crosswalk return keyed to `party_ref` | **Small–Med** | The adoption sweetener |
+
+---
+
+## 11. Hypothetical: acquisition, full document access, and semantic linkage infrastructure
+
+Scenario raised after §10: the effort is acquired; the acquirer grants **unrestricted use of their notes, PDFs, and other document types**. Two questions: (a) to reach the end goal — the hyper-intelligent investigative agent — should we tap that corpus **at the earliest level**? (b) What infrastructure is **already built or scoped** for *semantic embedding linkage* between the client-side entities being resolved and the entities ingested from scraping?
+
+### 11.1 "Tap it at the earliest level" — yes, with one precision
+
+The instinct is correct, but "earliest level" means **earliest pipeline stage (ingest and retain everything), not earliest model layer (shove raw documents into the GNN).** The north star (`product-scope.md`) is explicit about why: the agent's advantage is contextual attention over the full graph **with every hop citable** — the agent reasons over *evidence, not neurons*. That makes documents three different feedstocks at once, and the architecture must produce all three:
+
+1. **Extraction feedstock** → structured parties, events, edges (§8 Track 3's in-enclave LLM extraction — which acquisition flips from "posture decision" to **default**, since the client-extracts/OKO-resolves boundary was a business-posture line, and it dissolves inside one company).
+2. **Embedding feedstock** → node features (`note_emb`) *and* resolution linkage (this section's subject).
+3. **The evidence corpus itself** → retained, addressable, span-level citable. This is the one a "consume documents into embeddings and discard" design silently starves — and it's the agent's actual differentiator ("flagged because: demand letter of 2025-11-03, page 3, names the same clinic — citation").
+
+So: ingest at the earliest level, **retain raw documents in an immutable, versioned document store** (same discipline as `SnapshotStore` — stable doc/span IDs across versions is already named as one of the agent's five senses), and derive 1–3 from it. One thing acquisition does **not** dissolve: the privacy rails. Zero-egress becomes an internal deployment detail, but PHI handling, FCRA-adjacency, and Category-B claimant minimization (`client-data-standard.md` §6) are legal facts, not posture — the temporal-leakage rail (`is_outcome` events/documents held out of prior-dated features) also applies unchanged to document-derived signal.
+
+### 11.2 Honest inventory: what exists for semantic client↔reference linkage
+
+Three tiers — built, scoped-not-built, and not-scoped-at-all:
+
+**Built (the feature side):**
+- Per-node embedding storage on **every** node type (`data[ntype].note_emb`), the learned 768→`projection_dim` projection (`NoteProjection`), the `VectorDBConnector` ABC (+ in-memory stub; real vector DBs integrate by subclassing), builder wiring, and pretrain objectives (GraphMAE/DGI) that consume embeddings. This is embeddings **as scoring features** — solid, tested, and exactly the substrate §8 Track 1 plugs into.
+
+**Scoped precisely, not built (the linkage side):**
+- **Semantic/ANN blocking** — Alper Phase 0 in `product-scope.md` ("Research watch"): SBERT-class embeddings + approximate-KNN graph (FAISS/hnswlib), edge weight α·cosine, replacing brittle rule-blocks; echoed in the sourcing doc's §3.4 blocking plan. This *is* "semantic embedding linkage from client mentions to reference entities" — designed, phased, win-conditioned… and **zero code exists** (no FAISS/hnswlib/SBERT anywhere in the repo).
+- The **probabilistic stage** (`probabilistic.py`) it feeds — the documented stub.
+- The **local embedder utility** (onboarding playbook Phase 2) — scoped, not built.
+- **Embedding similarity retrieval as an agent sense** ("find prior cases that looked like this") — named in Req 3's five senses, not built.
+
+**Not scoped at all (the two real gaps the acquisition scenario exposes):**
+
+1. **Reference-side entity embeddings ("entity cards").** Semantic linkage needs *both sides in one embedding space* — and today only the client side has text to embed. The reference graph is structured rows (NPPES, LEIE, Sunbiz officers, court parties). Nothing is scoped to **serialize each reference entity into a textual profile** ("Type-2 org, taxonomy X, addresses A/B, officers Y/Z, excluded 2024-03, co-party on case N…") and embed it into the same space as client note-context embeddings. Without this, ANN blocking can only match client-mention↔client-mention, not client↔reference. Corollary requirements: **one pinned embedder version across both sides and across snapshot vintages** (an embedder upgrade silently invalidates every stored vector — re-embedding becomes a versioned, snapshot-dated job like any other ingest), and the **ANN index published as a snapshot artifact** alongside the reference graph.
+2. **The document pipeline.** PDFs/scanned documents are **explicitly out of scope v1** (onboarding playbook failure modes: "Our notes are PDFs/images → out of scope"). Post-acquisition this is the big net-new build: parse/OCR → chunking → span-level extraction (the §8 Track-3 LLM, now default) → **multi-granularity embeddings** (document / chunk / entity-mention) → the immutable document store with span-level provenance from 11.1.
+
+### 11.3 The unifying design: the *mention* becomes a first-class object
+
+The piece of architecture that ties resolution efficiency and the agent together — worth adopting the moment documents arrive:
+
+> **mention** (an entity reference at a specific document span) → mention embedding → ANN candidates from the entity-card index (client + reference sides) → probabilistic/LLM adjudication (§3.1, §8) → `same_as` edge carrying **span-level provenance**.
+
+The payoff is that **resolution evidence and agent evidence become the same object**: the note span that resolved "J. Smith" to the excluded provider is *precisely* the citation the agent later quotes to the investigator. One provenance schema serves both consumers; nothing is extracted twice. This also answers "tap it at the earliest level, correct?" in mechanism form: documents enter once, at the bottom, and every higher layer — resolution, features, scoring, agent narration — draws from the same versioned artifacts.
+
+### 11.4 Work items this adds (rows 22–26)
+
+| # | Change | Size | Notes |
+|---|---|---|---|
+| 22 | Reference entity-card serializer + embedding job (snapshot-dated artifact) | **Medium** | The missing half of the shared embedding space |
+| 23 | ANN index build + publication (FAISS/hnswlib) over entity cards + client mentions | **Small–Med** | Alper Phase 0, finally instantiated |
+| 24 | Embedder-version governance: pinned model, versioned vectors, re-embed-on-upgrade job | **Small (policy) + Med (job)** | Prevents silent cross-version drift |
+| 25 | Document store + parse/OCR pipeline with stable doc/span IDs and provenance | **Large** | The v1-exclusion reversed; gated on the acquisition scenario |
+| 26 | Mention-level schema: `mention(doc_id, span, entity_ref, embedding_ref)` + `same_as` provenance upgrade | **Medium** | The unifying object of 11.3 |
+
+Sequencing note: rows 22–24 are valuable **independent of any acquisition** — they complete the semantic-blocking design for the notes-primary work in §8 and can land with Phase 1 of §6. Rows 25–26 are the acquisition-gated build.
