@@ -185,3 +185,76 @@ Both are real; (a) is shippable now and de-risks (b). The choice of how far to m
 ### One-paragraph answer for the TPA (notes-primary)
 
 > You don't need an NPI or EIN on every name to make notes work for you. First, we capture the **context around each name** — the email, the location, the behavior described — as an **embedding on that entity**, so even when your extractor can't parse those into fields, that context still drives matching (entities with similar context cluster together, even when the name string is messy) and feeds the risk score. Second, we promote the **highest-value identifiers you *can* get from a note — email and phone — into exact-match keys**, which for parties without an NPI are the strongest anchor available (we down-weight shared inboxes like `frontdesk@` the same way we down-weight common names). Third, the **behaviors and actions** in your notes become a **dated timeline per entity** that feeds temporal risk features. The matching becomes a calibrated confidence with a review band, not a 90% name cutoff. If you want us to go further and have the system **read the notes and pull that context out for you**, we can run an LLM-based extractor-and-adjudicator **inside your environment** — your notes never leave, and every decision it makes is logged and reproducible.
+
+---
+
+## 9. Follow-up: beyond medical providers — attorneys, repair shops, witnesses, and the broader actor universe
+
+The TPA's data will not be provider-only. The entities needing resolution include **attorneys, witnesses, repair/body shops, interpreters, towing, employers** — actors identified by **tax IDs/EINs, sometimes case numbers, occasionally license or bar numbers, and above all names and addresses**. Two questions follow: *why wasn't this in scope*, and *what does adding it take*?
+
+### 9.1 Why it wasn't in scope (sequencing, not a blind spot)
+
+The honest history, straight from the design docs:
+
+- **The build order followed the public data, not the problem's shape.** Healthcare providers are the one actor class with a **regulation-mandated universal identifier (NPI)**, a **free full-population registry (NPPES)**, and **enforcement lists keyed to that same identifier (LEIE)**. That made the provider sub-graph the only place deterministic resolution could be built and validated *without any client data* — so M1–M2 built it first. The four built sources (`SOURCE_REGISTRY`: NPPES, LEIE, SAM, PECOS) are that spine.
+- **The broader universe was surveyed and parked, not rejected.** `data-sourcing-engine.md`'s source survey already covers **FL Sunbiz** (registration #, FEI/**EIN**, officers, registered agents — "best-in-class state registry"), **CourtListener/RECAP** (party names, litigation features), **OpenCorporates** (~230M companies; licensing decision open), and the state-SoS long tail. `product-scope.md` parks "court-records expansion" and "non-NPI verticals (auto/P&C) pending a linkage-key strategy" explicitly.
+- **EIN is designed but not built.** The deterministic pass is *specced* to union on "NPI, EIN (where sources expose it: FL Sunbiz FEI, claims data), UEI/CAGE, DEA" (§3.4), and the client join rules say "entities joined exactly on EIN where available" — but `deterministic.py` today implements only NPI/UEI/CAGE/enrollment keys. A gap between design and build, not between design and need.
+- **The strategic correction already happened on paper.** The "keyless-party correction" (`product-scope.md` Req 1) concedes that the highest-signal ring *connectors* — attorneys, firms, marketers, body shops, interpreters — are frequently keyless and that resolving them is "close to the main event." The TPA's broader dataset is precisely the forcing function that un-parks this work.
+
+### 9.2 What generalizes for free
+
+More than it might appear — the machinery is domain-agnostic; only the *keys and sources* are healthcare-flavored:
+
+- **Typed-key union-find** (`deterministic.py`): the `NPI:`/`UEI:`/`CAGE:` namespace pattern extends to any identifier in an afternoon each.
+- **Normalizers** (`normalize.py`): `normalize_org_name` / `normalize_person_name` / `normalize_address` don't care whether the org is a clinic or a body shop (the medical abbreviation map gets a legal/auto sibling — trivial).
+- **Graph schema is config-driven** (`GraphSchemaConfig.node_types` / `edge_types`): new node types and relations are YAML, not code.
+- **The `parties` table** (`client-data-standard.md` §3.4) already enumerates `attorney, law_firm, facility, dme_supplier, employer, marketer` — and §9 of that doc explicitly asks whether interpreters/transportation/repair belong in v1. The contract anticipated this.
+- **The probabilistic stage** (§3.1, §8) was *designed for* the keyless case; nothing about it is provider-specific.
+
+### 9.3 The distinction that must be gotten right: identity keys vs. association evidence
+
+The TPA lists "EINs, case numbers, names" in one breath — but they are **not the same kind of key**, and conflating them is the one way to badly break resolution:
+
+| Signal | Kind | Treatment |
+|---|---|---|
+| **EIN / TIN** | **Identity key** (org) | Union — same EIN = same legal entity. Add `EIN:` typed key. |
+| **Bar number** | **Identity key** (attorney, per state) | Union (state-scoped: `BAR:FL:123456`). |
+| **License numbers** (contractor/repair, adjuster, interpreter certification) | **Identity key** (issuer-scoped) | Union, namespaced by issuer. |
+| **Email / phone** (§8) | **Quasi-identity key** | Union with frequency down-weighting (shared inboxes). |
+| **Case number** | **Association evidence — never identity** | **Edge, never union.** A case number groups *adversaries and bystanders*: plaintiff, defendant, both counsel, witnesses, experts. Unioning on it would merge opposing attorneys into one entity — the false-merge-manufactures-fake-rings failure in its purest form. |
+| Name + address | Probabilistic features | Fellegi-Sunter scoring, banded (§3.1). |
+
+Case numbers are, however, **gold as graph structure**: co-occurrence on cases is exactly the attorney↔clinic↔shop pairing signal that ring detection runs on. Model them as either a `case` node type (`party -[appears_on]-> case`) or derived entity–entity `associated_with` edges with the case as provenance — the same pattern PECOS reassignment edges already use in `resolve/graph.py`.
+
+**One more boundary: witnesses are usually Category B.** Attorneys, firms, and repair shops are public actors (Category A — resolved against public data). A **witness is typically a private individual** — resolve them *internally only* via the pseudonymous-key mechanism (like claimants), never against external data. The payoff is intact: the classic staged-accident tell is the **repeat witness** across unrelated claims, and internal pseudonymous linkage catches that without ever touching public records. This keeps the FCRA/privacy rails (`client-data-standard.md` §2, §6) unbroken.
+
+### 9.4 The two-value point that makes this shippable now
+
+Resolution delivers **two separable values**, and only one of them waits on new scraping:
+
+1. **Internal resolution across the TPA's own book** — "the ABC Auto Body on this claim is the same ABC Auto Body on those 47 other claims, across name variants." This needs only *their* data plus the keys above, and it works **day one**: EIN/license/email keys union their own records; name+address probabilistic matching links the rest; case co-occurrence edges build the ring structure. Most ring detection value lives here.
+2. **Latching onto scraped external signal** — bar disciplinary history, business-registry officers/registered agents, court-record co-defendants. This grows with Layer-0 expansion (Sunbiz → business registries → bar directories → CourtListener). Per the existing graceful-degradation rule, unmatched actors become **local nodes that still score** — so external latch rate is a *coverage curve that improves monthly*, not a launch blocker.
+
+The provider sub-graph gets both values today; the legal/repair/witness universe gets value 1 immediately and value 2 incrementally.
+
+### 9.5 What needs to adjust (concrete, extends the §8 table)
+
+| # | Change | Size | Notes |
+|---|---|---|---|
+| 7 | `ein_key` (+ TIN) typed key + checksum/format validation in `deterministic.py` | **Small** | Already specced in sourcing doc §3.4; closes the design/build gap |
+| 8 | `bar_key` / `license_key` typed keys, issuer-scoped namespaces | **Small** | Identity keys for attorneys / shops / interpreters |
+| 9 | `case` handling: case node type **or** derived `associated_with` edges with case provenance — never a union key | **Medium** | Mirrors the PECOS-reassignment edge pattern |
+| 10 | Extend `parties.party_type` enum: `repair_shop`, `towing`, `interpreter`, `witness` (+ witness → Category-B handling) | **Trivial (schema) + spec (privacy)** | `client-data-standard.md` §9 already asks this question |
+| 11 | Legal/auto sibling of the org-abbreviation map (`ATTY→ATTORNEY`, `AUTO BODY`, `COLLISION`, …) | **Trivial** | |
+| 12 | New `BulkSource` scrapers, priority order: FL Sunbiz (built survey, free SFTP, carries EIN) → state bar directories → CourtListener/RECAP → OpenCorporates decision | **Medium each, ongoing** | Un-parks the court-records expansion; licensing gates per source survey |
+| 13 | LoB awareness: repair shops/witnesses imply auto/P&C claims — confirm `line_of_business` coverage and any LoB-specific features | **Small–Medium** | The parked "non-NPI verticals" item; the linkage-key strategy it was waiting on is rows 7–9 + §8's email/phone |
+
+### 9.6 Phasing (slots into §6's plan)
+
+- **Into Phase 0–1 (now):** rows 7, 8, 10, 11 — EIN/bar/license keys and enum/normalizer extensions are small and multiply the deterministic anchor rate on exactly the entities the TPA cares about. Case-number edges (row 9) land with the graph build in Phase 2.
+- **Parallel Layer-0 track (weeks → ongoing):** row 12, starting with Sunbiz (free, bulk, EIN-bearing — immediately raises external latch rate for *any* org with an EIN, medical or not).
+- **Decision points surfaced:** the OpenCorporates license budget (already an open decision in `product-scope.md`) and the witness/Category-B spec (row 10) — the latter should be settled before any witness data flows.
+
+### One-paragraph answer for the TPA (broader entities)
+
+> The provider focus was a build-order choice, not a limitation of the approach: healthcare providers were the one place a full public registry (NPPES) plus enforcement lists let us build and prove the resolution engine before touching client data. The machinery itself doesn't care what kind of entity it's resolving. For your attorneys, repair shops, and other parties we do three things: **treat EINs, bar numbers, and license numbers as exact-match keys** — same EIN means same shop, full stop; **treat case numbers as connections, not identities** — a shared case links an attorney to a clinic to a body shop on the graph (which is exactly the ring signal we score), but it never merges two people into one; and **witnesses get linked privately** — a repeat witness across unrelated claims lights up without their identity ever being matched against outside data. All of this resolves *within your book* on day one; connections to outside data — bar discipline, corporate registrations, court records — layer on as we expand the public reference graph, and every unmatched entity still gets scored from your own data in the meantime.
