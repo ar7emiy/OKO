@@ -366,3 +366,13 @@ The payoff is that **resolution evidence and agent evidence become the same obje
 | 26 | Mention-level schema: `mention(doc_id, span, entity_ref, embedding_ref)` + `same_as` provenance upgrade | **Medium** | The unifying object of 11.3 |
 
 Sequencing note: rows 22–24 are valuable **independent of any acquisition** — they complete the semantic-blocking design for the notes-primary work in §8 and can land with Phase 1 of §6. Rows 25–26 are the acquisition-gated build.
+
+### 11.5 Correction from review: the boundary stays — build a bridge, not a merge
+
+On review, the acquisition scenario is sharper than §11.1 first framed it: **the OKO/client division survives acquisition.** OKO remains a separable product (sellable for a separate fee); the acquirer leverages it internally through a **bridge module** rather than by dissolving the extraction/resolution boundary. Three consequences:
+
+- **The bridge *is* the existing contract.** The connector ABCs + the flat-table data standard were designed as the integration surface for any client — the acquirer is simply a client with unusually deep data access. This validates keeping the contract strict rather than special-casing the parent company; whatever the bridge module does (Azure AI Search connector, igraph crosswalk, mention intake) must stay expressible as implementations of the same ABCs any client could implement. That is what keeps OKO separable.
+- **Documents stay stubbed.** No PDF/OCR pipeline (§11.2 gap 2 is deferred, not un-parked). Future document flow arrives either as **Markdown** or as **ops-manager-reviewed structured extractions** — both of which enter through the existing contract (`entity_narrative` / `parties` / `entity_events`), not through a new ingestion layer. Row 25 is parked; row 26 (mention schema) survives because notes need it regardless.
+- **Notes are confirmed as the primary source**, and every entity in their current igraph is mentioned in them. The acquirer is standing the notes up in **Azure AI Search** — a natural bridge target: a `VectorDBConnector`/note-source implementation against their index (their infrastructure, their environment, raw text + retrieval already solved). One rail: if their index's vectorizer produces the embeddings, its **model + version must be pinned into our embedder-governance scheme (row 24)** or the client-side vectors won't live in the same space as our entity cards — prefer pulling raw text and embedding with our pinned model, or adopting their vectorizer as *the* pinned model on both sides.
+
+The full field-level specification of what the TPA should provide is split out into a companion document: [`tpa-data-request.md`](./tpa-data-request.md).
